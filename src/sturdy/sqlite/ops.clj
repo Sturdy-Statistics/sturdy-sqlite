@@ -3,12 +3,14 @@
    [taoensso.telemere :as t])
   (:import
    (java.sql SQLException)
-   (org.sqlite SQLiteException))) ;; <--- Import the native exception
+   (org.sqlite SQLiteException)))
 
 (set! *warn-on-reflection* true)
 
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Error Codes
+
+;;; see https://sqlite.org/rescode.html
 
 ;; Primary Codes
 (def err-busy       5)
