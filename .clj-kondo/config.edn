@@ -1,0 +1,3 @@
+{:hooks
+ {:analyze-call
+  {sturdy.sqlite.test/with-test-db hooks.sturdy.sqlite.test/with-test-db}}}
