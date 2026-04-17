@@ -1,9 +1,12 @@
 (ns sturdy.sqlite.ops
   (:require
+   [next.jdbc :as jdbc]
    [taoensso.telemere :as t])
   (:import
    (java.sql SQLException)
-   (org.sqlite SQLiteException)))
+   (org.sqlite SQLiteException)
+   (java.sql Connection Statement)
+   (javax.sql DataSource)))
 
 (set! *warn-on-reflection* true)
 
@@ -73,3 +76,47 @@
       (if (= result :retry)
         (recur (inc n))
         (:ok result)))))
+
+;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; with-immediate-transaction
+
+(defprotocol ImmediateTransactable
+  (-transact-immediate [this opts f]))
+
+(defn- exec-sql!
+  [^Connection conn ^String sql]
+  (with-open [^Statement stmt (.createStatement conn)]
+    (.execute stmt sql)))
+
+(extend-protocol ImmediateTransactable
+  DataSource
+  (-transact-immediate [ds opts f]
+    (with-open [conn (jdbc/get-connection ds opts)]
+      (-transact-immediate conn opts f)))
+
+  Connection
+  (-transact-immediate [conn opts f]
+    (when-not (.getAutoCommit conn)
+      (throw (ex-info "Cannot start BEGIN IMMEDIATE on a connection that is already in a transaction."
+                      {})))
+    (try
+      (exec-sql! conn "BEGIN IMMEDIATE")
+      (let [tx  (jdbc/with-options conn opts)
+            res (f tx)]
+        (exec-sql! conn "COMMIT")
+        res)
+      (catch Throwable t
+        (try
+          (exec-sql! conn "ROLLBACK")
+          (catch Throwable _))
+        (throw t))))
+
+  clojure.lang.IPersistentMap
+  (-transact-immediate [m opts f]
+    (let [opts (merge (:opts m) opts)]
+      (-transact-immediate (:connectable m) opts f))))
+
+(defmacro with-immediate-transaction
+  [bindings & body]
+  (let [[sym connectable opts] bindings]
+    `(-transact-immediate ~connectable ~(or opts {}) (fn [~sym] ~@body))))
