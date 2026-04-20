@@ -9,6 +9,14 @@
 
  :aliases {:local-deps
            {:extra-deps {com.sturdystats/sturdy-fs {:local/root "../sturdy-fs"}}}
+
+           :bench
+           {:extra-paths ["bench"]
+            :extra-deps  {org.slf4j/slf4j-nop                  {:mvn/version "2.0.17"}
+                          org.clojure/core.async               {:mvn/version "1.9.865"}}
+            :exec-fn     sqlite-rate-limit-batched/bench
+            :exec-args   {:dirs ["bench"]}}
+
            :test
            {:extra-paths ["test" "test-resources"]
             :extra-deps  {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}
