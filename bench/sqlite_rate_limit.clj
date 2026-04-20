@@ -4,9 +4,9 @@
    [next.jdbc :as jdbc]
    [sturdy.sqlite.core :as sqlite.core]
    [sturdy.sqlite.ops :as sqlite.ops]
+   [sturdy.sqlite.types :as types]
    [taoensso.telemere :as t])
   (:import
-   (java.sql SQLException)
    (java.util UUID)
    (java.util.concurrent Executors TimeUnit Callable Future)))
 
@@ -16,205 +16,180 @@
 (def ^:const hour-ms 3600000)
 (def ^:const limit-per-hour 25000)
 
-(defn now-ms []
-  (System/currentTimeMillis))
+(defn now-ms [] (System/currentTimeMillis))
+(defn random-org-id [] (UUID/randomUUID))
 
-(defn random-org-id []
-  (UUID/randomUUID))
-
-(defn bucket-start-ms
-  ^long [^long now-ms]
+(defn bucket-start-ms ^long [^long now-ms]
   (* (quot now-ms minute-ms) minute-ms))
 
-(defn oldest-live-bucket-ms
-  ^long [^long now-ms]
+(defn oldest-live-bucket-ms ^long [^long now-ms]
   (- (bucket-start-ms now-ms) (* 59 minute-ms)))
 
-(defn setup-shared-bucket-db!
-  [db-dir]
-  (let [{:keys [datasource close-fn]}
-        (sqlite.core/make-datasource "bench-rate-limit-buckets" db-dir :high-performance)]
-    (jdbc/execute! datasource ["DROP TABLE IF EXISTS api_minute_buckets"])
-    (jdbc/execute! datasource ["CREATE TABLE api_minute_buckets (
-                                 organization_id BLOB    NOT NULL,
-                                 bucket_start_ms INTEGER NOT NULL,
-                                 request_count   INTEGER NOT NULL DEFAULT 0,
-                                 PRIMARY KEY (organization_id, bucket_start_ms)
-                               )"])
-    {:ds datasource
-     :close-fn close-fn}))
+(def b-opts (types/make-builder-opts {}))
 
-(defn- admit-request-bucketed-once!
-  [tx org-id now-ms]
-  (let [bucket-ms    (bucket-start-ms now-ms)
-        window-start (oldest-live-bucket-ms now-ms)
-        row          (jdbc/execute-one!
-                      tx
-                      ["SELECT COALESCE(SUM(request_count), 0) AS total
-                        FROM api_minute_buckets
-                        WHERE organization_id = ?
-                          AND bucket_start_ms >= ?"
-                       org-id
-                       window-start])
-        total        (long (:total row 0))]
-    (if (< total limit-per-hour)
-      (do
-        (jdbc/execute-one!
-         tx
-         ["INSERT INTO api_minute_buckets (organization_id, bucket_start_ms, request_count)
-           VALUES (?, ?, 1)
-           ON CONFLICT (organization_id, bucket_start_ms)
-           DO UPDATE SET request_count = request_count + 1"
-          org-id
-          bucket-ms])
-        true)
-      false)))
+(defn setup-db! [db-name db-dir profile-key batch-size]
+  (let [sys (sqlite.core/make-datasource db-name db-dir profile-key
+                                         {:batch-size batch-size
+                                          :builder-opts b-opts})
+        ds  (:datasource sys)]
+    (jdbc/execute! ds ["DROP TABLE IF EXISTS api_minute_buckets"])
+    (jdbc/execute! ds ["
+CREATE TABLE api_minute_buckets (
+  organization_id BLOB    NOT NULL,
+  bucket_start_ms INTEGER NOT NULL,
+  request_count   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (organization_id, bucket_start_ms)
+)"])
+    sys))
 
-(defn admit-request-bucketed-retrying!
-  [ds org-id now-ms]
-  (sqlite.ops/retry-sqlite
-   #(sqlite.ops/with-immediate-transaction [tx ds]
-      (admit-request-bucketed-once! tx org-id now-ms))
-   :retries 10
-   :base-delay-ms 2))
+;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Unified SQL Statements
 
-(defn admit-request-bucketed-strict!
-  [ds org-id now-ms]
-  (sqlite.ops/with-immediate-transaction [tx ds]
-    (admit-request-bucketed-once! tx org-id now-ms)))
+(defn admit-sql
+  "A single atomic statement that checks the rate limit and UPSERTs if allowed.
+   Returns 1 updated row if admitted, or 0 if rejected by the WHERE clause."
+  [org-id bucket-ms window-start limit]
+  ["INSERT INTO api_minute_buckets (organization_id, bucket_start_ms, request_count)
+    SELECT ?, ?, 1
+    WHERE (SELECT COALESCE(SUM(request_count), 0)
+           FROM api_minute_buckets
+           WHERE organization_id = ? AND bucket_start_ms >= ?) < ?
+    ON CONFLICT (organization_id, bucket_start_ms)
+    DO UPDATE SET request_count = request_count + 1"
+   org-id bucket-ms org-id window-start limit])
 
-(defn prune-buckets!
-  [ds now-ms]
+(defn prune-sql [now-ms]
   (let [cutoff (- (bucket-start-ms now-ms) hour-ms)]
-    (jdbc/execute-one!
-     ds
-     ["DELETE FROM api_minute_buckets
-       WHERE bucket_start_ms < ?"
-      cutoff])))
+    ["DELETE FROM api_minute_buckets WHERE bucket_start_ms < ?" cutoff]))
 
-(defn safe-admit!
-  [{:keys [ds org-id t retry?]}]
-  (try
-    {:status (if ((if retry?
-                    admit-request-bucketed-retrying!
-                    admit-request-bucketed-strict!)
-                  ds org-id t)
-               :admit
-               :reject)}
-    (catch SQLException e
-      (let [code (sqlite.ops/primary-err-code e)]
-        (if (#{sqlite.ops/err-busy sqlite.ops/err-locked} code)
-          {:status :busy}
-          (throw e))))))
+;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Worker Tasks
 
-(defn run-serial!
-  [{:keys [ds org-ids n-ops prune-every retry?]}]
-  (let [start-ns (System/nanoTime)]
-    (loop [i 0
-           admits 0
-           rejects 0
-           busies 0]
-      (if (= i n-ops)
-        (let [elapsed-ns (- (System/nanoTime) start-ns)]
-          {:mode        (if retry? :bucketed-serial-retrying :bucketed-serial-strict)
-           :n-ops       n-ops
-           :admits      admits
-           :rejects     rejects
-           :busies      busies
-           :elapsed-ms  (/ elapsed-ns 1e6)
-           :ops-per-sec (/ n-ops (/ elapsed-ns 1e9))})
-        (let [org-id         (nth org-ids (mod i (count org-ids)))
-              t              (now-ms)
-              {:keys [status]} (safe-admit! {:ds ds :org-id org-id :t t :retry? retry?})]
-          (when (and prune-every (pos? prune-every) (zero? (mod (inc i) prune-every)))
-            (prune-buckets! ds t))
-          (recur (inc i)
-                 (if (= status :admit)  (inc admits) admits)
-                 (if (= status :reject) (inc rejects) rejects)
-                 (if (= status :busy)   (inc busies) busies)))))))
-
-(defn worker-task
-  [ds org-ids n-ops prune-every retry?]
+(defn batched-worker-task [{:keys [write-fn write-async-fn]} org-ids n-ops prune-every]
   (fn []
-    (loop [i 0
-           admits 0
-           rejects 0
-           busies 0]
+    (loop [i 0 admits 0 rejects 0 errors 0]
       (if (= i n-ops)
-        {:admits admits :rejects rejects :busies busies}
-        (let [org-id         (nth org-ids (mod i (count org-ids)))
-              t              (now-ms)
-              {:keys [status]} (safe-admit! {:ds ds :org-id org-id :t t :retry? retry?})]
-          (when (and prune-every (pos? prune-every) (zero? (mod (inc i) prune-every)))
-            (prune-buckets! ds t))
-          (recur (inc i)
-                 (if (= status :admit)  (inc admits) admits)
-                 (if (= status :reject) (inc rejects) rejects)
-                 (if (= status :busy)   (inc busies) busies)))))))
+        {:admits admits :rejects rejects :errors errors}
+        (let [org-id (nth org-ids (mod i (count org-ids)))
+              t      (now-ms)
+              b-ms   (bucket-start-ms t)
+              w-ms   (oldest-live-bucket-ms t)
+              sql    (admit-sql org-id b-ms w-ms limit-per-hour)
 
-(defn run-concurrent!
-  [{:keys [ds org-ids n-threads ops-per-thread prune-every retry?]}]
-  (let [pool      (Executors/newFixedThreadPool n-threads)
-        tasks     (mapv (fn [_]
-                          ^Callable
-                          (reify Callable
-                            (call [_]
-                              ((worker-task ds org-ids ops-per-thread prune-every retry?)))))
-                        (range n-threads))
-        start-ns  (System/nanoTime)
-        futures   (.invokeAll pool tasks)
-        results   (mapv #(.get ^Future %) futures)
-        _         (.shutdown pool)
-        _         (.awaitTermination pool 1 TimeUnit/MINUTES)
+              ;; Use the queue for writes
+              status (try
+                       (let [res (write-fn sql)]
+                         (if (pos? (-> res first :next.jdbc/update-count)) :admit :reject))
+                       (catch Exception _ :error))]
+
+          ;; Push a prune command into the queue (fire-and-forget)
+          (when (and prune-every (pos? prune-every) (zero? (mod (inc i) prune-every)))
+            (write-async-fn (prune-sql t)))
+
+          (recur (inc i)
+                 (if (= status :admit) (inc admits) admits)
+                 (if (= status :reject) (inc rejects) rejects)
+                 (if (= status :error) (inc errors) errors)))))))
+
+(defn unbatched-worker-task [{:keys [datasource]} org-ids n-ops prune-every]
+  (fn []
+    (loop [i 0 admits 0 rejects 0 errors 0]
+      (if (= i n-ops)
+        {:admits admits :rejects rejects :errors errors}
+        (let [org-id (nth org-ids (mod i (count org-ids)))
+              t      (now-ms)
+              b-ms   (bucket-start-ms t)
+              w-ms   (oldest-live-bucket-ms t)
+              sql    (admit-sql org-id b-ms w-ms limit-per-hour)
+
+              ;; Use immediate transactions and retry logic
+              status (try
+                       (sqlite.ops/retry-sqlite
+                        (fn []
+                          (sqlite.ops/with-immediate-transaction [tx datasource]
+                            (let [res (jdbc/execute! tx sql b-opts)]
+                              (if (pos? (-> res first :next.jdbc/update-count)) :admit :reject)))))
+                       (catch Exception _ :error))]
+
+          ;; Prune synchronously using immediate transactions
+          (when (and prune-every (pos? prune-every) (zero? (mod (inc i) prune-every)))
+            (try
+              (sqlite.ops/retry-sqlite
+               (fn []
+                 (sqlite.ops/with-immediate-transaction [tx datasource]
+                   (jdbc/execute! tx (prune-sql t) b-opts))))
+              (catch Exception _)))
+
+          (recur (inc i)
+                 (if (= status :admit) (inc admits) admits)
+                 (if (= status :reject) (inc rejects) rejects)
+                 (if (= status :error) (inc errors) errors)))))))
+
+;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Benchmark Harness
+
+(defn run-concurrent! [{:keys [mode sys worker-fn-maker org-ids n-threads ops-per-thread prune-every]}]
+  (let [pool       (Executors/newFixedThreadPool n-threads)
+        tasks      (mapv (fn [_]
+                           (reify Callable
+                             (call [_]
+                               ((worker-fn-maker sys org-ids ops-per-thread prune-every)))))
+                         (range n-threads))
+        start-ns   (System/nanoTime)
+        futures    (.invokeAll pool tasks)
+        results    (mapv #(.get ^Future %) futures)
+        _          (.shutdown pool)
+        _          (.awaitTermination pool 1 TimeUnit/MINUTES)
         elapsed-ns (- (System/nanoTime) start-ns)
-        total-ops (* n-threads ops-per-thread)]
-    {:mode        (if retry? :bucketed-concurrent-retrying :bucketed-concurrent-strict)
+        total-ops  (* n-threads ops-per-thread)]
+    {:mode        mode
      :n-threads   n-threads
      :n-ops       total-ops
      :admits      (reduce + (map :admits results))
      :rejects     (reduce + (map :rejects results))
-     :busies      (reduce + (map :busies results))
+     :errors      (reduce + (map :errors results))
      :elapsed-ms  (/ elapsed-ns 1e6)
-     :ops-per-sec (/ total-ops (/ elapsed-ns 1e9))}))
+     :ops-per-sec (float (/ total-ops (/ elapsed-ns 1e9)))}))
 
 (defn bench
-  [{:keys [db-dir n-orgs n-ops n-threads ops-per-thread prune-every]
-    :or   {db-dir         ".bench/sqlite-rate-limit-buckets"
+  [{:keys [db-dir n-orgs n-threads ops-per-thread prune-every batch-size]
+    :or   {db-dir         ".bench/sqlite-rate-limit"
            n-orgs         100
-           n-ops          50000
-           n-threads      8
-           ops-per-thread 10000
-           prune-every    1000}}]
+           n-threads      500
+           ops-per-thread 160
+           prune-every    1000
+           batch-size     500}}]
+
+  ;; Suppress telemetry logs so they don't spam the benchmark output
   (doseq [h (keys (t/get-handlers))]
     (t/remove-handler! h))
+  (fs/delete-tree db-dir)
   (fs/create-dirs db-dir)
-  (let [{:keys [ds close-fn]} (setup-shared-bucket-db! db-dir)
-        org-ids (vec (repeatedly n-orgs random-org-id))]
+
+  (let [org-ids (vec (repeatedly n-orgs random-org-id))]
+
     (try
-      (println "\n== Bucketed / serial / strict ==")
-      (prn (run-serial!
-            {:ds ds
-             :org-ids org-ids
-             :n-ops n-ops
-             :prune-every prune-every
-             :retry? false}))
+      (println "\n== Unbatched (BEGIN IMMEDIATE + Retry Jitter) ==")
+      (let [sys (setup-db! "unbatched" db-dir :low-resource batch-size)]
+        (prn (run-concurrent! {:mode            :unbatched
+                               :sys             sys
+                               :worker-fn-maker unbatched-worker-task
+                               :org-ids         org-ids
+                               :n-threads       n-threads
+                               :ops-per-thread  ops-per-thread
+                               :prune-every     prune-every}))
+        ((:close-fn sys)))
 
-      (println "\n== Bucketed / concurrent / strict ==")
-      (prn (run-concurrent!
-            {:ds ds
-             :org-ids org-ids
-             :n-threads n-threads
-             :ops-per-thread ops-per-thread
-             :prune-every prune-every
-             :retry? false}))
+      (println "\n== Batched (Single Writer Queue) ==")
+      (let [sys (setup-db! "batched" db-dir :low-resource batch-size)]
+        (prn (run-concurrent! {:mode            :batched
+                               :sys             sys
+                               :worker-fn-maker batched-worker-task
+                               :org-ids         org-ids
+                               :n-threads       n-threads
+                               :ops-per-thread  ops-per-thread
+                               :prune-every     prune-every}))
+        ((:close-fn sys)))
 
-      (println "\n== Bucketed / concurrent / retrying ==")
-      (prn (run-concurrent!
-            {:ds ds
-             :org-ids org-ids
-             :n-threads n-threads
-             :ops-per-thread ops-per-thread
-             :prune-every prune-every
-             :retry? true}))
       (finally
-        (close-fn)))))
+        (fs/delete-tree db-dir)))))

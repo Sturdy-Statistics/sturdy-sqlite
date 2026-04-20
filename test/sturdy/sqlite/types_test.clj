@@ -12,9 +12,9 @@
 (deftest type-roundtrip-test
   (ts/with-quiet-logging
    (testing "Custom types are successfully written to and read from SQLite"
-     (with-test-db [ds "type-test-db"]
+     (with-test-db [{:keys [datasource]} "type-test-db"]
        ;; 1. Set up a dummy schema
-       (jdbc/execute! ds ["
+       (jdbc/execute! datasource ["
         CREATE TABLE test_types (
           id BLOB PRIMARY KEY,
           status TEXT,
@@ -40,7 +40,7 @@
 
          (try
            ;; 3. Insert Clojure native types
-           (sql/insert! ds :test_types
+           (sql/insert! datasource :test_types
                         {:id        test-uuid
                          :status    :processing
                          :is_active true
@@ -49,7 +49,7 @@
                         opts)
 
            ;; 4. Read them back and assert exact equality
-           (let [row (first (sql/find-by-keys ds :test_types {:id test-uuid} opts))]
+           (let [row (first (sql/find-by-keys datasource :test_types {:id test-uuid} opts))]
              (is (= test-uuid (:id row)))
              (is (= :processing (:status row)) "Keyword survived")
              (is (= true (:is-active row)) "Boolean survived")

@@ -8,14 +8,16 @@
     ;; Check if the first argument is actually a vector
     (if (and bindings (= :vector (:type bindings)))
       (let [b-args           (:children bindings)
-            ds-binding       (first b-args)
+            sys-binding      (first b-args)   ;; Can be a symbol or a destructuring map
             db-name          (second b-args)
             classpath-prefix (nth b-args 2 nil)
 
-            ;; Construct a valid `let` binding vector: [ds-binding db-name]
-            ;; This tells clj-kondo that `ds-binding` is a local var
-            let-bindings     (if (and ds-binding db-name)
-                               [ds-binding db-name]
+            ;; Construct a valid `let` binding vector: [sys-binding db-name]
+            ;; clj-kondo natively understands map destructuring. By pairing the
+            ;; `sys-binding` node with `db-name`, clj-kondo will automatically
+            ;; register `:datasource`, `:write-fn`, etc., as locals in the body.
+            let-bindings     (if (and sys-binding db-name)
+                               [sys-binding db-name]
                                [])
 
             ;; Push the optional prefix into the body so clj-kondo lints it

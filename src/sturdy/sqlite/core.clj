@@ -4,6 +4,7 @@
    [babashka.fs :as fs]
    [sturdy.sqlite.migrate :as migrate]
    [sturdy.sqlite.backup :as backup]
+   [sturdy.sqlite.ops :as ops]
    [taoensso.telemere :as t])
   (:import
    (com.zaxxer.hikari HikariConfig HikariDataSource)
@@ -109,8 +110,23 @@
   "Creates a HikariDataSource for the given physical database path.
    Ensures the parent directory exists before initialization.
 
-   Available profiles: :high-performance, :low-resource"
-  [db-name db-dir profile-key]
+   Available profiles: :high-performance, :low-resource
+
+   Opts:
+     :batch-size    (default: 500)
+     :batch-wait-ms (default: 10)
+     :builder-opts  (default: {}) - Global next.jdbc opts
+
+  Returns a map:
+   {:datasource     (HikariDataSource)
+    :write-fn       (fn [sql-vec & [opts]]): efficient writes. Blocking, waits for the result
+    :write-async-fn fire-and-forget variant
+    :migrate-fn     (fn [classpath-prefix]): perform ragtime migration.  call on setup
+    :backup-fn      (fn [backup-dir]): backup DB
+    :close-fn       (fn): - Closes the anchor, then the pool}"
+  [db-name db-dir profile-key
+   & [{:keys [batch-size batch-wait-ms builder-opts]
+       :or {batch-size 500 batch-wait-ms 10 builder-opts {}}}]]
 
   (when (= :in-memory profile-key)
     (throw (ex-info "The DB will drop if idle. Use make-in-memory-datasource instead."
@@ -118,15 +134,23 @@
 
   (fs/create-dirs db-dir)
 
-  (let [db-name' (-> db-name fs/file-name fs/strip-ext)
-        db-path  (fs/path db-dir (str db-name' ".db"))
-        cfg      (build-hk-cfg db-name' db-path profile-key)
-        ds       (HikariDataSource. cfg)]
+  (let [db-name'  (-> db-name fs/file-name fs/strip-ext)
+        db-path   (fs/path db-dir (str db-name' ".db"))
+        cfg       (build-hk-cfg db-name' db-path profile-key)
+        ds        (HikariDataSource. cfg)
+        batch-sys (ops/start-batch-writer! ds batch-size batch-wait-ms builder-opts)]
+
    {:datasource ds
-    :migrate-fn (fn [classpath-prefix] (migrate/migrate! db-name' ds classpath-prefix))
-    :backup-fn  (fn [backup-dir & [opts]]
-                  (backup/backup-db! db-name' ds backup-dir opts))
-    :close-fn   (fn [] (close-datasource! db-name' ds))}))
+    :write-fn       (fn [sql-vec & [opts]]
+                      (ops/execute-batched! batch-sys sql-vec opts))
+    :write-async-fn (fn [sql-vec & [opts]]
+                      (ops/execute-batched-async! batch-sys sql-vec opts))
+    :migrate-fn     (fn [classpath-prefix] (migrate/migrate! db-name' ds classpath-prefix))
+    :backup-fn      (fn [backup-dir & [opts]]
+                      (backup/backup-db! db-name' ds backup-dir opts))
+    :close-fn       (fn []
+                      (ops/close-batch-writer! batch-sys)
+                      (close-datasource! db-name' ds))}))
 
 (defn make-in-memory-datasource
   "Creates an in-memory HikariDataSource. Automatically checks out an
@@ -135,17 +159,35 @@
 
    `db-name` can be any string (e.g., a random UUID for test isolation).
 
+  Opts:
+     :batch-size    (default: 500)
+     :batch-wait-ms (default: 10)
+     :builder-opts  (default: {}) - Global next.jdbc opts
+
    Returns a map:
-   {:datasource (HikariDataSource)
-    :anchor     (java.sql.Connection)
-    :close-fn   (fn) - Safely closes the anchor, then the pool}"
-  [db-name]
-  (let [db-name' (-> db-name fs/file-name fs/strip-ext)
-        ds       (HikariDataSource. (build-hk-cfg db-name db-name :in-memory))
-        anchor   (.getConnection ds)]
+   {:datasource     (HikariDataSource)
+    :write-fn       (fn [sql-vec & [opts]]): efficient writes. Blocking, waits for the result
+    :write-async-fn fire-and-forget variant
+    :migrate-fn     (fn [classpath-prefix]): perform ragtime migration.  call on setup
+    :backup-fn      (fn [backup-dir]): backup DB
+    :close-fn       (fn): - Closes the anchor, then the pool}"
+  [db-name
+   & [{:keys [batch-size batch-wait-ms builder-opts]
+       :or {batch-size 500 batch-wait-ms 10 builder-opts {}}}]]
+  (let [db-name'  (-> db-name fs/file-name fs/strip-ext)
+        cfg       (build-hk-cfg db-name db-name :in-memory)
+        ds        (HikariDataSource. cfg)
+        anchor    (.getConnection ds)
+        batch-sys (ops/start-batch-writer! ds batch-size batch-wait-ms builder-opts)]
 
     {:datasource ds
+     :write-fn       (fn [sql-vec & [opts]]
+                       (ops/execute-batched! batch-sys sql-vec opts))
+     :write-async-fn (fn [sql-vec & [opts]]
+                       (ops/execute-batched-async! batch-sys sql-vec opts))
      :migrate-fn (fn [classpath-prefix] (migrate/migrate! db-name' ds classpath-prefix))
      :backup-fn  (fn [backup-dir & [opts]]
                    (backup/backup-db! db-name' ds backup-dir opts))
-     :close-fn   (fn [] (close-in-memory-datasource! db-name ds anchor))}))
+     :close-fn   (fn []
+                   (ops/close-batch-writer! batch-sys)
+                   (close-in-memory-datasource! db-name ds anchor))}))

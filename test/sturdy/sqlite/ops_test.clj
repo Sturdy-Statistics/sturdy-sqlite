@@ -59,16 +59,16 @@
 
 (deftest extended-error-codes-test
   (testing "Extracts extended error codes natively from the JDBC driver"
-    (with-test-db [ds "error-codes-db"]
+    (with-test-db [{:keys [datasource]} "error-codes-db"]
       ;; 1. Setup a table with a UNIQUE constraint
-      (jdbc/execute! ds ["CREATE TABLE unique_test (id INTEGER PRIMARY KEY, email TEXT UNIQUE)"])
+      (jdbc/execute! datasource ["CREATE TABLE unique_test (id INTEGER PRIMARY KEY, email TEXT UNIQUE)"])
 
       ;; 2. Insert the first valid row
-      (jdbc/execute! ds ["INSERT INTO unique_test (email) VALUES ('test@example.com')"])
+      (jdbc/execute! datasource ["INSERT INTO unique_test (email) VALUES ('test@example.com')"])
 
       ;; 3. Attempt to insert a duplicate and catch the exception
       (let [captured-ex (try
-                          (jdbc/execute! ds ["INSERT INTO unique_test (email) VALUES ('test@example.com')"])
+                          (jdbc/execute! datasource ["INSERT INTO unique_test (email) VALUES ('test@example.com')"])
                           nil
                           (catch SQLException e
                             e))]

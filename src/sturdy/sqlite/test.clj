@@ -4,17 +4,19 @@
 
 (defmacro with-test-db
   "Spins up an isolated, in-memory SQLite database with an anchor connection.
-   Executes `body` with `ds-binding` bound to the HikariDataSource.
-   Safely tears down the pool and anchor afterwards.
+   Executes `body` with `sys-binding` bound to the system map.
 
-   If `classpath-prefix` is provided, automatically runs migrations before
-   executing the body."
-  [[ds-binding db-name & [classpath-prefix]] & body]
-  `(let [system# (core/make-in-memory-datasource ~db-name)
-         ~ds-binding (:datasource system#)]
+   `opts` can be a string (treated as `classpath-prefix`) or a map of options
+   passed to the database factory (which can include `:classpath-prefix` and `:builder-opts`)."
+  [[sys-binding db-name & [opts]] & body]
+  `(let [opts#        (if (string? ~opts) {:classpath-prefix ~opts} (or ~opts {}))
+         prefix#      (:classpath-prefix opts#)
+         db-opts#     (dissoc opts# :classpath-prefix)
+         sys#         (core/make-in-memory-datasource ~db-name db-opts#)
+         ~sys-binding sys#]
      (try
-       (when ~classpath-prefix
-         ((:migrate-fn system#) ~classpath-prefix))
+       (when prefix#
+         ((:migrate-fn sys#) prefix#))
        ~@body
        (finally
-         ((:close-fn system#))))))
+         ((:close-fn sys#))))))

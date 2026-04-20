@@ -1,5 +1,6 @@
 (ns sturdy.sqlite.ops
   (:require
+   [clojure.core.async :as a]
    [next.jdbc :as jdbc]
    [taoensso.telemere :as t])
   (:import
@@ -120,3 +121,60 @@
   [bindings & body]
   (let [[sym connectable opts] bindings]
     `(-transact-immediate ~connectable ~(or opts {}) (fn [~sym] ~@body))))
+
+;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; core.async Batching Engine
+
+(defn start-batch-writer!
+  "Starts a background thread that pulls from req-ch and executes in time/size bounded batches.
+   Returns a map with the input channel (:req-ch) and the thread completion channel (:worker-ch)."
+  [ds max-batch-size max-wait-ms global-builder-opts]
+  (let [req-ch (a/chan 10000)]
+    {:req-ch req-ch
+     :worker-ch
+     (a/thread
+       (loop []
+         (when-let [first-req (a/<!! req-ch)]
+           (let [timeout-ch (a/timeout max-wait-ms)
+                 batch      (loop [acc [first-req]
+                                   n   1]
+                              (if (= n max-batch-size)
+                                acc
+                                (let [[val port] (a/alts!! [req-ch timeout-ch])]
+                                  (if (and (= port req-ch) val)
+                                    (recur (conj acc val) (inc n))
+                                    acc))))]
+             (try
+               (with-immediate-transaction [tx ds]
+                 (doseq [{:keys [sql-vec opts resp-ch]} batch]
+                   (try
+                     (let [merged-opts (merge global-builder-opts opts)
+                           res         (jdbc/execute! tx sql-vec merged-opts)]
+                       (when resp-ch (a/put! resp-ch res)))
+                     (catch Exception e
+                       (when resp-ch (a/put! resp-ch e))))))
+               (catch Exception global-e
+                 (doseq [{:keys [resp-ch]} batch]
+                   (when resp-ch (a/put! resp-ch global-e)))))
+             (recur)))))}))
+
+(defn close-batch-writer!
+  [{:keys [req-ch worker-ch]}]
+  (a/close! req-ch)
+  (a/<!! worker-ch))
+
+(defn execute-batched!
+  "Pushes a standard JDBC sql-vec to the batch writer and blocks for the result.
+   Acts as a drop-in replacement for (jdbc/execute! ds [\"...\"] opts)."
+  [batch-sys sql-vec & [opts]]
+  (let [resp-ch (a/promise-chan)]
+    (a/>!! (:req-ch batch-sys) {:sql-vec sql-vec :opts opts :resp-ch resp-ch})
+    (let [res (a/<!! resp-ch)]
+      (if (instance? Throwable res)
+        (throw res)
+        res))))
+
+(defn execute-batched-async!
+  "Fire-and-forget version. Returns immediately."
+  [batch-sys sql-vec & [opts]]
+  (a/>!! (:req-ch batch-sys) {:sql-vec sql-vec :opts opts}))
