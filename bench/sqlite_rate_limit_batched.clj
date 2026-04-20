@@ -10,9 +10,51 @@
    (java.util UUID)
    (java.util.concurrent Executors TimeUnit Callable Future)))
 
+;;; stack should look like this:
+;; wrap-ip-rate-limit (In-memory, protects against volumetric spam)
+;; wrap-authentication (Validates the JWT / API Key, extracts org-id)
+;; wrap-org-rate-limit (Our SQLite batcher, enforces the 150k business limit)
+;; app-routes (Your actual API logic)
+
+;; ;; purely in-memory state.
+;; ;; Shape: {:window 29384729 :counts {"192.168.1.1" 5, "10.0.0.5" 1}}
+;; (defonce ip-states (atom {:window 0 :counts {}}))
+
+;; (defn- admit-ip?
+;;   "Atomic fixed-window rate limiter.
+;;    Automatically garbage-collects old IPs when the time window rolls over."
+;;   [ip window-ms max-requests]
+;;   (let [now-window (quot (System/currentTimeMillis) window-ms)
+;;         new-state  (swap! ip-states
+;;                           (fn [{:keys [window counts] :as st}]
+;;                             (if (= window now-window)
+;;                               ;; Still in the same time window, increment the IP's count
+;;                               (assoc st :counts (update counts ip (fnil inc 0)))
+;;                               ;; Time window changed! Drop the old map entirely.
+;;                               ;; This O(1) GC prevents attackers from causing OutOfMemory errors.
+;;                               {:window now-window :counts {ip 1}})))]
+;;     (<= (get-in new-state [:counts ip]) max-requests)))
+
+;; (defn wrap-ip-rate-limit
+;;   "Ring middleware to block volumetric DOS attacks per IP."
+;;   [handler & {:keys [window-ms max-requests]
+;;               ;; Sensible defaults: 300 requests per minute per IP (5/sec)
+;;               :or {window-ms    60000
+;;                    max-requests 300}}]
+;;   (fn [request]
+;;     (let [ip (get-client-ip request)]
+;;       (if (admit-ip? ip window-ms max-requests)
+;;         ;; IP is clean, pass to authentication
+;;         (handler request)
+;;         ;; IP is spamming, block immediately
+;;         {:status 429
+;;          :headers {"Content-Type" "text/plain"
+;;                    "Retry-After" (str (quot window-ms 1000))}
+;;          :body "Too Many Requests"}))))
+
 ;;; example usage
 ;;;
-;; (defn wrap-rate-limit
+;; (defn wrap-org-rate-limit
 ;;   "Ring middleware for dynamic-batched rate limiting."
 ;;   [handler req-ch]
 ;;   (fn [request]
