@@ -19,8 +19,6 @@
 (def ^:private profiles
   {:analytics
    ;; Workload: Long-running, complex SELECT queries (aggregations, joins).
-   ;; Tuning: A larger pool so long queries don't starve the queue, plus
-   ;; larger memory maps and page caches so the OS doesn't have to hit the disk.
    {:pool {:maximumPoolSize 10
            :minimumIdle     10}
     :pragmas ["PRAGMA foreign_keys=ON;"
@@ -28,13 +26,11 @@
               "PRAGMA synchronous=NORMAL;"
               "PRAGMA busy_timeout=5000;"
               "PRAGMA temp_store=MEMORY;"
-              "PRAGMA mmap_size=268435456;" ;; 256 Mb
+              "PRAGMA mmap_size=268435456;" ;; 256 MB
               "PRAGMA cache_size=-64000;"]} ;;  64 MB cache
 
    :auth
    ;; Workload: fast, highly concurrent point-reads (SELECT * WHERE id = ?).
-   ;; Tuning: A moderate pool. Because queries take microseconds, connections return
-   ;; to the pool instantly, so 5 connections can serve thousands of requests/sec.
    {:pool {:maximumPoolSize 5
            :minimumIdle     5}
     :pragmas ["PRAGMA foreign_keys=ON;"
@@ -47,9 +43,6 @@
 
    :write-intensive
    ;; Workload: Background queues, metrics ingestion, append-heavy tables.
-   ;; Tuning: Tiny pool. The single-writer queue only needs 1 connection,
-   ;; plus 1 extra just in case a manual read is needed. Tiny caches because
-   ;; we are mostly appending, not reading.
    {:pool {:maximumPoolSize 2
            :minimumIdle     2}
     :pragmas ["PRAGMA foreign_keys=ON;"
@@ -59,6 +52,18 @@
               "PRAGMA temp_store=FILE;"
               "PRAGMA mmap_size=0;"
               "PRAGMA cache_size=-4000;"]}  ;; 4 MB cache
+
+   :general-purpose
+   ;; Workload: Standard CRUD web apps, queue servers, and mixed read/write loads.
+   {:pool {:maximumPoolSize 5
+           :minimumIdle     5}
+    :pragmas ["PRAGMA foreign_keys=ON;"
+              "PRAGMA journal_mode=WAL;"
+              "PRAGMA synchronous=NORMAL;"
+              "PRAGMA busy_timeout=5000;"
+              "PRAGMA temp_store=MEMORY;"
+              "PRAGMA mmap_size=268435456;"  ;; 256 MB
+              "PRAGMA cache_size=-32000;"]}  ;;  32 MB cache
 
    :low-resource
    {:pool {:maximumPoolSize 2
