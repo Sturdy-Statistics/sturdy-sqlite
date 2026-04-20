@@ -5,6 +5,7 @@
    [sturdy.sqlite.core :as sqlite.core]
    [sturdy.sqlite.ops :as sqlite.ops]
    [sturdy.sqlite.types :as types]
+   [criterium.core :as crit]
    [taoensso.telemere :as t])
   (:import
    (java.util UUID)
@@ -151,45 +152,104 @@ CREATE TABLE api_minute_buckets (
      :elapsed-ms  (/ elapsed-ns 1e6)
      :ops-per-sec (float (/ total-ops (/ elapsed-ns 1e9)))}))
 
+;; (defn bench
+;;   [{:keys [db-dir n-orgs n-threads ops-per-thread prune-every batch-size]
+;;     :or   {db-dir         ".bench/sqlite-rate-limit"
+;;            n-orgs         100
+;;            n-threads      500
+;;            ops-per-thread 160
+;;            prune-every    1000
+;;            batch-size     500}}]
+
+;;   ;; Suppress telemetry logs so they don't spam the benchmark output
+;;   (doseq [h (keys (t/get-handlers))]
+;;     (t/remove-handler! h))
+;;   (fs/delete-tree db-dir)
+;;   (fs/create-dirs db-dir)
+
+;;   (let [org-ids (vec (repeatedly n-orgs random-org-id))]
+
+;;     (try
+;;       (println "\n== Unbatched (BEGIN IMMEDIATE + Retry Jitter) ==")
+;;       (let [sys (setup-db! "unbatched" db-dir :low-resource batch-size)]
+;;         (prn (run-concurrent! {:mode            :unbatched
+;;                                :sys             sys
+;;                                :worker-fn-maker unbatched-worker-task
+;;                                :org-ids         org-ids
+;;                                :n-threads       n-threads
+;;                                :ops-per-thread  ops-per-thread
+;;                                :prune-every     prune-every}))
+;;         ((:close-fn sys)))
+
+;;       (println "\n== Batched (Single Writer Queue) ==")
+;;       (let [sys (setup-db! "batched" db-dir :low-resource batch-size)]
+;;         (prn (run-concurrent! {:mode            :batched
+;;                                :sys             sys
+;;                                :worker-fn-maker batched-worker-task
+;;                                :org-ids         org-ids
+;;                                :n-threads       n-threads
+;;                                :ops-per-thread  ops-per-thread
+;;                                :prune-every     prune-every}))
+;;         ((:close-fn sys)))
+
+;;       (finally
+;;         (fs/delete-tree db-dir)))))
+
+;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Criterium Benchmark Harness
+
+(defn create-workload-fn
+  "Returns a zero-arity function that executes the full concurrent workload once.
+   By reusing the thread pool, we ensure Criterium only measures DB/Queue throughput."
+  [pool sys worker-fn-maker org-ids n-threads ops-per-thread prune-every]
+  (fn []
+    (let [tasks (mapv (fn [_]
+                        (reify Callable
+                          (call [_]
+                            ((worker-fn-maker sys org-ids ops-per-thread prune-every)))))
+                      (range n-threads))]
+      ;; Block until all threads finish this batch of work
+      (doseq [^Future f (.invokeAll ^java.util.concurrent.ExecutorService pool tasks)]
+        (.get f)))))
+
 (defn bench
   [{:keys [db-dir n-orgs n-threads ops-per-thread prune-every batch-size]
     :or   {db-dir         ".bench/sqlite-rate-limit"
            n-orgs         100
            n-threads      500
-           ops-per-thread 160
+           ops-per-thread 100
            prune-every    1000
            batch-size     500}}]
 
-  ;; Suppress telemetry logs so they don't spam the benchmark output
   (doseq [h (keys (t/get-handlers))]
     (t/remove-handler! h))
   (fs/delete-tree db-dir)
   (fs/create-dirs db-dir)
 
-  (let [org-ids (vec (repeatedly n-orgs random-org-id))]
+  (let [org-ids   (vec (repeatedly n-orgs random-org-id))
+        total-ops (* n-threads ops-per-thread)
+        ;; Pre-allocate the thread pool so Criterium doesn't measure thread creation
+        pool      (Executors/newFixedThreadPool n-threads)]
 
     (try
-      (println "\n== Unbatched (BEGIN IMMEDIATE + Retry Jitter) ==")
-      (let [sys (setup-db! "unbatched" db-dir :low-resource batch-size)]
-        (prn (run-concurrent! {:mode            :unbatched
-                               :sys             sys
-                               :worker-fn-maker unbatched-worker-task
-                               :org-ids         org-ids
-                               :n-threads       n-threads
-                               :ops-per-thread  ops-per-thread
-                               :prune-every     prune-every}))
-        ((:close-fn sys)))
+      (println "\n============================================================")
+      (println (format " Warming up & Benchmarking %d total ops per sample..." total-ops))
+      (println "============================================================\n")
 
-      (println "\n== Batched (Single Writer Queue) ==")
-      (let [sys (setup-db! "batched" db-dir :low-resource batch-size)]
-        (prn (run-concurrent! {:mode            :batched
-                               :sys             sys
-                               :worker-fn-maker batched-worker-task
-                               :org-ids         org-ids
-                               :n-threads       n-threads
-                               :ops-per-thread  ops-per-thread
-                               :prune-every     prune-every}))
+      ;; (let [sys  (setup-db! "unbatched" db-dir :low-resource batch-size)
+      ;;       work (create-workload-fn pool sys unbatched-worker-task org-ids n-threads ops-per-thread prune-every)]
+      ;;   (println "== Unbatched (BEGIN IMMEDIATE + Retry Jitter) ==")
+      ;;   (crit/quick-bench (work))
+      ;;   ((:close-fn sys)))
+
+      ;; (println "\n------------------------------------------------------------\n")
+
+      (let [sys  (setup-db! "batched" db-dir :write-intensive batch-size)
+            work (create-workload-fn pool sys batched-worker-task org-ids n-threads ops-per-thread prune-every)]
+        (println "== Batched (Single Writer Queue) ==")
+        (crit/quick-bench (work))
         ((:close-fn sys)))
 
       (finally
+        (.shutdown pool)
         (fs/delete-tree db-dir)))))

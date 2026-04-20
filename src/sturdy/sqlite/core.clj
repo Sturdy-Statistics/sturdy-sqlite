@@ -17,32 +17,65 @@
 ;;; Configuration Profiles
 
 (def ^:private profiles
-  {:high-performance
+  {:analytics
+   ;; Workload: Long-running, complex SELECT queries (aggregations, joins).
+   ;; Tuning: A larger pool so long queries don't starve the queue, plus
+   ;; larger memory maps and page caches so the OS doesn't have to hit the disk.
    {:pool {:maximumPoolSize 10
-           :minimumIdle 2}
+           :minimumIdle     10}
     :pragmas ["PRAGMA foreign_keys=ON;"
               "PRAGMA journal_mode=WAL;"
               "PRAGMA synchronous=NORMAL;"
               "PRAGMA busy_timeout=5000;"
               "PRAGMA temp_store=MEMORY;"
               "PRAGMA mmap_size=268435456;" ;; 256 Mb
-              "PRAGMA cache_size=-64000;"]} ;; 64 Mb
+              "PRAGMA cache_size=-64000;"]} ;;  64 MB cache
 
-   :low-resource
-   {:pool {:maximumPoolSize 2
-           :minimumIdle 1}
+   :auth
+   ;; Workload: fast, highly concurrent point-reads (SELECT * WHERE id = ?).
+   ;; Tuning: A moderate pool. Because queries take microseconds, connections return
+   ;; to the pool instantly, so 5 connections can serve thousands of requests/sec.
+   {:pool {:maximumPoolSize 5
+           :minimumIdle     5}
     :pragmas ["PRAGMA foreign_keys=ON;"
               "PRAGMA journal_mode=WAL;"
               "PRAGMA synchronous=NORMAL;"
               "PRAGMA busy_timeout=5000;"
-              "PRAGMA temp_store=FILE;"     ;; Spill to disk to save RAM
-              "PRAGMA mmap_size=0;"         ;; Disable memory mapping
-              "PRAGMA cache_size=-4000;"]}  ;; Tiny 4MB cache
+              "PRAGMA temp_store=MEMORY;"
+              "PRAGMA mmap_size=134217728;"  ;; 128 MB
+              "PRAGMA cache_size=-16000;"]}  ;;  16 MB cache
+
+   :write-intensive
+   ;; Workload: Background queues, metrics ingestion, append-heavy tables.
+   ;; Tuning: Tiny pool. The single-writer queue only needs 1 connection,
+   ;; plus 1 extra just in case a manual read is needed. Tiny caches because
+   ;; we are mostly appending, not reading.
+   {:pool {:maximumPoolSize 2
+           :minimumIdle     2}
+    :pragmas ["PRAGMA foreign_keys=ON;"
+              "PRAGMA journal_mode=WAL;"
+              "PRAGMA synchronous=NORMAL;"
+              "PRAGMA busy_timeout=5000;"
+              "PRAGMA temp_store=FILE;"
+              "PRAGMA mmap_size=0;"
+              "PRAGMA cache_size=-4000;"]}  ;; 4 MB cache
+
+   :low-resource
+   {:pool {:maximumPoolSize 2
+           :minimumIdle     2}
+    :pragmas ["PRAGMA foreign_keys=ON;"
+              "PRAGMA journal_mode=WAL;"
+              "PRAGMA synchronous=NORMAL;"
+              "PRAGMA busy_timeout=5000;"
+              "PRAGMA temp_store=FILE;" ;; Spill to disk to save RAM
+              "PRAGMA mmap_size=0;"     ;; Disable memory mapping
+              "PRAGMA cache_size=-4000;"]} ;; 4MB cache
 
    :in-memory
+   ;; Workload: Ephemeral test suites.
    {:jdbc-url "jdbc:sqlite:file:%s?mode=memory&cache=shared"
-    :pool {:maximumPoolSize 5
-           :minimumIdle 1}
+    :pool {:maximumPoolSize 2
+           :minimumIdle     2}
     :pragmas  ["PRAGMA foreign_keys=ON;"
                "PRAGMA journal_mode=MEMORY;"
                "PRAGMA synchronous=OFF;"
