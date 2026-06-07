@@ -9,6 +9,8 @@
    [clojure.edn :as edn]
    [sturdy.sqlite.test-support :as ts]))
 
+(set! *warn-on-reflection* true)
+
 (deftest type-roundtrip-test
   (ts/with-quiet-logging
    (testing "Custom types are successfully written to and read from SQLite"

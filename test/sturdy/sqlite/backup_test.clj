@@ -8,6 +8,8 @@
   (:import
    (java.nio.file.attribute FileTime)))
 
+(set! *warn-on-reflection* true)
+
 (deftest backup-db-retention-test
   (ts/with-quiet-logging
    (testing "Successfully creates a backup and deletes ONLY backups older than keep-days"

@@ -2,6 +2,8 @@
   (:require
    [sturdy.sqlite.core :as core]))
 
+(set! *warn-on-reflection* true)
+
 (defmacro with-test-db
   "Spins up an isolated, in-memory SQLite database with an anchor connection.
    Executes `body` with `sys-binding` bound to the system map.

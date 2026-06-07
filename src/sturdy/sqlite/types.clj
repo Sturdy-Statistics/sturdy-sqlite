@@ -23,13 +23,13 @@
 
 (defn uuid->bytes ^bytes [^UUID uuid]
   (have uuid? uuid)
-  (let [bb (ByteBuffer/wrap (byte-array 16))]
+  (let [^ByteBuffer bb (ByteBuffer/wrap (byte-array 16))]
     (.putLong bb (.getMostSignificantBits uuid))
     (.putLong bb (.getLeastSignificantBits uuid))
     (.array bb)))
 
 (defn bytes->uuid ^UUID [^bytes b]
-  (let [bb (ByteBuffer/wrap b)]
+  (let [^ByteBuffer bb (ByteBuffer/wrap b)]
     (UUID. (.getLong bb) (.getLong bb))))
 
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

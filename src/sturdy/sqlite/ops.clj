@@ -71,7 +71,7 @@
                                      :err-code  (err-code e)
                                      :sleep-ms  sleep-ms
                                      :error     (.getMessage e)}})
-                    (Thread/sleep ^long (long sleep-ms))
+                    (Thread/sleep (long sleep-ms))
                     :retry)
                   (throw e)))))]
       (if (= result :retry)
@@ -86,7 +86,7 @@
 
 (defn- exec-sql!
   [^Connection conn ^String sql]
-  (with-open [^Statement stmt (.createStatement conn)]
+  (with-open [stmt ^Statement (.createStatement conn)]
     (.execute stmt sql)))
 
 (extend-protocol ImmediateTransactable

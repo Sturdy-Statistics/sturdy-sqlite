@@ -8,6 +8,8 @@
    (java.io Closeable)
    (java.sql Connection)))
 
+(set! *warn-on-reflection* true)
+
 (deftest close-datasource-test
   (ts/with-quiet-logging
    (testing "Graceful handling of close-datasource! errors"

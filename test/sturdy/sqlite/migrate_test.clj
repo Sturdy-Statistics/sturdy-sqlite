@@ -6,6 +6,8 @@
    [sturdy.sqlite.types :as types]
    [next.jdbc :as jdbc]))
 
+(set! *warn-on-reflection* true)
+
 ;; Need a fake test migration in a unique classpath prefix, but we don't have one readily available.
 ;; Or we can just mock ragtime-repl.
 (deftest migrate-rollback-test

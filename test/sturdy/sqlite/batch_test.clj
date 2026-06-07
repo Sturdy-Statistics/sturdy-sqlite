@@ -5,6 +5,8 @@
    [sturdy.sqlite.test :refer [with-test-db]]
    [sturdy.sqlite.types :as types]))
 
+(set! *warn-on-reflection* true)
+
 (deftest batch-writer-test
   (let [b-opts  (types/make-builder-opts {})
         db-opts {:builder-opts b-opts}]
