@@ -2,3 +2,6 @@
 .nrepl-port
 .cpcache
 .bench
+clj-watson.properties
+target
+*.md
