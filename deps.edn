@@ -22,18 +22,21 @@
            {:extra-paths ["test" "test-resources"]
             :extra-deps  {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}
                           org.slf4j/slf4j-nop                  {:mvn/version "2.0.17"}}
-            :main-opts ["-m" "cognitect.test-runner"]
+            :main-opts   ["-m" "cognitect.test-runner"]
+            :jvm-opts    ["--enable-native-access=ALL-UNNAMED"]
             :exec-fn     cognitect.test-runner.api/test}
 
            :coverage
            {:extra-paths ["test"]
             :extra-deps {cloverage/cloverage {:mvn/version "1.2.4"}}
+            :jvm-opts    ["--enable-native-access=ALL-UNNAMED"]
             :exec-fn cloverage.coverage/run-project
             :exec-args {:src-ns-path ["src"]
                         :test-ns-path ["test"]}}
 
            :vuln
            {:extra-deps {io.github.clj-holmes/clj-watson {:git/tag "v6.1.0" :git/sha "be98e4d"}}
+            :jvm-opts    ["--enable-native-access=ALL-UNNAMED"]
             :exec-fn clj-watson.entrypoint/scan
             :exec-args {:deps-edn-path "deps.edn"
                         :clj-watson-properties "clj-watson.properties"}}}}
