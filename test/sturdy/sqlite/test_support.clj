@@ -12,6 +12,7 @@
   ;; Save current handlers, silence logging, run, restore.
   (let [saved-handlers (t/get-handlers)]
     (remove-all-handlers!)
+    (t/add-handler! :noop (fn [_] nil))
     (try
       (thunk)
       (finally
