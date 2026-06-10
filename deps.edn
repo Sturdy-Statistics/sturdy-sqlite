@@ -15,6 +15,7 @@
            {:extra-paths ["bench"]
             :extra-deps  {org.slf4j/slf4j-nop  {:mvn/version "2.0.17"}
                           criterium/criterium  {:mvn/version "0.4.6"}}
+            :jvm-opts    ["--enable-native-access=ALL-UNNAMED"]
             :exec-fn     sqlite-rate-limit/bench
             :exec-args   {:dirs ["bench"]}}
 
@@ -27,7 +28,7 @@
             :exec-fn     cognitect.test-runner.api/test}
 
            :coverage
-           {:extra-paths ["test"]
+           {:extra-paths ["test" "test-resources"]
             :extra-deps {cloverage/cloverage {:mvn/version "1.2.4"}}
             :jvm-opts    ["--enable-native-access=ALL-UNNAMED"]
             :exec-fn cloverage.coverage/run-project

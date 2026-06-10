@@ -20,7 +20,8 @@
   [^String db-name ^HikariDataSource datasource backup-dir & [{:keys [keep-days] :or {keep-days 30}}]]
 
   (let [formatter    (DateTimeFormatter/ofPattern "yyyy-MM-dd_HH-mm-ss")
-        timestamp    (.format ^LocalDateTime (LocalDateTime/now) ^DateTimeFormatter formatter)
+        ^LocalDateTime now (LocalDateTime/now)
+        timestamp    (.format ^DateTimeFormatter formatter now)
         file-prefix  (str db-name "-")
         backup-file  (str (fs/path backup-dir (format "%s%s.db" file-prefix timestamp)))
 
