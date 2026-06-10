@@ -1,6 +1,8 @@
-# sturdy.sqlite
+## sturdy.sqlite
 
-A SQLite toolkit for Clojure apps.
+[![Clojars Project](https://img.shields.io/clojars/v/com.sturdystats/sturdy-sqlite.svg)](https://clojars.org/com.sturdystats/sturdy-sqlite)
+
+**A SQLite toolkit for Clojure apps.**
 
 SQLite is remarkably fast, but its single-writer concurrency model can cause `SQLITE_BUSY` errors in multi-threaded web applications. 
 `sturdy.sqlite` solves this by combining HikariCP for concurrent *reads* with a dedicated `core.async` background queue for *writes,* pushing SQLite throughput to 50k+ writes per second without lock contention.
@@ -12,6 +14,16 @@ SQLite is remarkably fast, but its single-writer concurrency model can cause `SQ
 * **Zero-Downtime Backups:** Online point-in-time snapshots using `VACUUM INTO`.
 * **Custom Types:** Seamless conversion for UUIDs (stored as BLOBs), Enums, Paths, and JSON.
 * **Testing Utility:** A macro for isolated, ephemeral test databases.
+
+## Installation
+
+
+Add to `deps.edn`:
+
+```clojure
+{:deps com.sturdystats/sturdy-sqlite {:mvn/version "VERSION"}}
+```
+
 
 ## Initialization & The System Map
 
