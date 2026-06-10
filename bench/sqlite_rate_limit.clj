@@ -6,6 +6,7 @@
    [sturdy.sqlite.ops :as sqlite.ops]
    [sturdy.sqlite.types :as types]
    [criterium.core :as crit]
+   [clojure.pprint :as pp]
    [taoensso.telemere :as t])
   (:import
    (java.util UUID)
@@ -212,14 +213,33 @@ CREATE TABLE api_minute_buckets (
       (doseq [^Future f (.invokeAll ^java.util.concurrent.ExecutorService pool tasks)]
         (.get f)))))
 
+(defn- process-data [res total-ops batch-size]
+  (let [tot (double total-ops)]
+    (letfn [(xf [k] (int (/ tot (-> (get res k) first))))]
+      (merge
+       {:total-ops total-ops
+        :batch-size batch-size
+        :tail-quantile (:tail-quantile res)}
+       {:mean (xf :mean)
+        :lo (xf :lower-q)
+        :hi (xf :upper-q)}))))
+
+(defn- bench-batch-size
+  [db-dir pool org-ids n-threads ops-per-thread prune-every batch-size]
+  (let [sys (setup-db! "batched" db-dir :write-intensive batch-size)
+        work (create-workload-fn pool sys batched-worker-task org-ids n-threads ops-per-thread prune-every)
+        total-ops (* n-threads ops-per-thread)
+        res (crit/quick-benchmark (work) {})]
+    ((:close-fn sys))
+    (process-data res total-ops batch-size)))
+
 (defn bench
-  [{:keys [db-dir n-orgs n-threads ops-per-thread prune-every batch-size]
+  [{:keys [db-dir n-orgs n-threads ops-per-thread prune-every batch-sizes]
     :or   {db-dir         ".bench/sqlite-rate-limit"
            n-orgs         100
            n-threads      500
            ops-per-thread 100
-           prune-every    1000
-           batch-size     500}}]
+           batch-sizes    [1 16 64 256 1024 4096]}}]
 
   (doseq [h (keys (t/get-handlers))]
     (t/remove-handler! h))
@@ -228,27 +248,18 @@ CREATE TABLE api_minute_buckets (
 
   (let [org-ids   (vec (repeatedly n-orgs random-org-id))
         total-ops (* n-threads ops-per-thread)
-        ;; Pre-allocate the thread pool so Criterium doesn't measure thread creation
         pool      (Executors/newFixedThreadPool n-threads)]
 
     (try
       (println "\n============================================================")
-      (println (format " Warming up & Benchmarking %d total ops per sample..." total-ops))
+      (println (format " Benchmarking %d total ops across batch sizes..." total-ops))
       (println "============================================================\n")
 
-      ;; (let [sys  (setup-db! "unbatched" db-dir :low-resource batch-size)
-      ;;       work (create-workload-fn pool sys unbatched-worker-task org-ids n-threads ops-per-thread prune-every)]
-      ;;   (println "== Unbatched (BEGIN IMMEDIATE + Retry Jitter) ==")
-      ;;   (crit/quick-bench (work))
-      ;;   ((:close-fn sys)))
-
-      ;; (println "\n------------------------------------------------------------\n")
-
-      (let [sys  (setup-db! "batched" db-dir :write-intensive batch-size)
-            work (create-workload-fn pool sys batched-worker-task org-ids n-threads ops-per-thread prune-every)]
-        (println "== Batched (Single Writer Queue) ==")
-        (crit/quick-bench (work))
-        ((:close-fn sys)))
+      (let [data (for [bs batch-sizes]
+                   (bench-batch-size db-dir pool org-ids n-threads ops-per-thread prune-every bs))]
+        (pp/print-table [:total-ops :batch-size :tail-quantile :mean :lo :hi]
+                        data)
+        (println))
 
       (finally
         (.shutdown pool)

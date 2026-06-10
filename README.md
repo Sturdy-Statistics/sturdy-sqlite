@@ -1,17 +1,17 @@
 # sturdy.sqlite
 
-A robust, highly concurrent, and production-ready SQLite toolkit for Clojure apps.
+A SQLite toolkit for Clojure apps.
 
-SQLite is incredibly fast, but its single-writer concurrency model can cause `SQLITE_BUSY` errors in multi-threaded web applications. 
-`sturdy.sqlite` solves this by combining HikariCP for concurrent reads with a dedicated `core.async` background queue for writes, pushing SQLite throughput to 50k+ writes per second without lock contention.
+SQLite is remarkably fast, but its single-writer concurrency model can cause `SQLITE_BUSY` errors in multi-threaded web applications. 
+`sturdy.sqlite` solves this by combining HikariCP for concurrent *reads* with a dedicated `core.async` background queue for *writes,* pushing SQLite throughput to 50k+ writes per second without lock contention.
 
 ## Features
 * **Single-Writer Queue:** Batches inserts to eliminate write-lock contention.
 * **Optimized Profiles:** Pre-configured PRAGMAs (WAL mode, memory mapping) for `:high-performance`, `:low-resource`, and `:in-memory` workloads.
-* **Deadlock Prevention:** Safe multi-statement transactions using `BEGIN IMMEDIATE`.
+* **Deadlock Prevention:** Multi-statement transactions using `BEGIN IMMEDIATE`.
 * **Zero-Downtime Backups:** Online point-in-time snapshots using `VACUUM INTO`.
 * **Custom Types:** Seamless conversion for UUIDs (stored as BLOBs), Enums, Paths, and JSON.
-* **Testing Harness:** A drop-in macro for isolated, ephemeral test databases.
+* **Testing Utility:** A macro for isolated, ephemeral test databases.
 
 ## Initialization & The System Map
 
@@ -23,9 +23,10 @@ This initializes the Hikari pool, sets all connection PRAGMAs, and spins up the 
          '[sturdy.sqlite.types :as types])
 
 ;; 1. Define your custom type parsers
-(def b-opts (types/make-builder-opts {:uuid-col? #{"id" "user-id"}
-                                      :json-col? #{"metadata"}
-                                      :json-parse-fn my-json-parser}))
+(def b-opts (types/make-builder-opts {:uuid-col?     #{"id" "user-id"}
+                                      :json-col?     #{"metadata"}
+                                      :bool-col?     #(string/starts-with? % "is-")
+                                      :json-parse-fn #(try (cheshire.core/parse-string % false) (catch Exception _ %))}))
 
 ;; 2. Note the nesting! The factory expects the options wrapped under :builder-opts
 (def db-opts {:batch-size 500
@@ -39,8 +40,8 @@ This initializes the Hikari pool, sets all connection PRAGMAs, and spins up the 
 The factory returns a system map containing everything you need to interact with the database:
 `{:datasource, :write-fn, :write-async-fn, :migrate-fn, :backup-fn, :close-fn}`
 
-**Crucial shutdown note:** Always call `(:close-fn sys)` when shutting down your application. 
-This gracefully flushes the background queue before closing the physical connections.
+**NB:** Always call `(:close-fn sys)` when shutting down your application. 
+This flushes the background queue before closing the physical connections.
 
 ## How to Interact with the Database
 
@@ -49,7 +50,7 @@ Choosing the right one is critical for performance and safety.
 
 ### 1. Reads (Use standard `next.jdbc`)
 For all `SELECT` queries, bypass the write queue and use standard `next.jdbc` functions directly against the `:datasource`. 
-This utilizes the full Hikari connection pool for highly concurrent reads.
+This utilizes the full Hikari connection pool for concurrent reads.
 
 **Important:** When reading, pass the unwrapped `b-opts` to `next.jdbc` so it uses your custom column parsers and returns unqualified kebab-case maps
 
@@ -60,10 +61,12 @@ This utilizes the full Hikari connection pool for highly concurrent reads.
 (jdbc/execute! (:datasource sys) ["SELECT * FROM users"] b-opts)
 ```
 
-### 2. Homogeneous Writes (Use the Batch Queue)
+### 2. Homogeneous Writes 
+
 If you are doing standard single-statement inserts, updates, or deletes, use the batch writer. 
-It routes requests through a `core.async` channel to a single worker thread, executing up to 500 operations in a single physical transaction. 
-This entirely eliminates `SQLITE_BUSY` contention.
+It routes requests through a `core.async` channel to a single worker thread which batches operations in a single physical transaction.
+(The writer flushes when it reaches the `batch_size` (default 500) or `timeout_ms` (default 10) passed to `make-datasource`.)
+This dramatically improves write throughput and eliminates `SQLITE_BUSY` contention.
 
 * **:write-fn (Synchronous / Blocking):** Use this when you need the generated ID back, or you need to know if the query failed (e.g., catching a unique constraint violation). 
 It blocks the calling thread until the background queue processes the batch.
@@ -75,8 +78,8 @@ It blocks the calling thread until the background queue processes the batch.
 ```
 
 * **:write-async-fn (Fire-and-Forget):** Use this for high-throughput, non-critical data like logging, metric counters, or rate-limiting. 
-It returns immediately and flushes in the background. 
-Errors are silently swallowed.
+It returns immediately and flushes in the background without blocking the calling thread. 
+Use this instead of `:write-fn` when you don't need to wait for the transaction to complete, and you don't care about reading generated IDs or catching database errors.
 ```clojure
 ((:write-async-fn sys) ["UPDATE metrics SET count = count + 1 WHERE id = ?" 1])
 ```
@@ -109,8 +112,7 @@ Put your `.sql` migrations in `resources/migrations` and run them at startup:
 ```
 
 **Backups:**
-Never copy a live SQLite `.db` file using standard OS tools, as it may result in a corrupt snapshot. 
-Use the built-in backup function, which safely streams the database using `VACUUM INTO` without blocking writers. 
+The built-in backup function streams the database using `VACUUM INTO` without blocking writers. 
 It also automatically prunes backups older than 30 days.
 ```clojure
 ;; Creates a snapshot in the provided directory (e.g., ./backups/my-app-2026-04-20_12-00-00.db)
@@ -141,6 +143,43 @@ It automatically handles the "anchor" connection to prevent the DB from garbage 
     (let [users (jdbc/execute! datasource ["SELECT * FROM users"] b-opts)]
       (is (= 1 (count users))))))
 ```
+
+## Benchmark
+
+Use `clj -X:bench` to run a benchmark.
+**Note:** this command will take a long time to run.
+
+The benchmark simulates a high-throughput, real-world rate-limiting workload across 500 concurrent threads.
+This isn't just a simple integer insert; each operation executes a complex, atomic `UPSERT` that:
+1. Inserts a new API request bucket for a specific `UUID` (stored optimally as a 16-byte `BLOB`).
+2. Executes a `WHERE` subquery to calculate the `SUM` of all request counts over a rolling 60-minute window to verify the user is under the rate limit.
+3. Utilizes `ON CONFLICT DO UPDATE` to atomically increment the bucket counter.
+4. Periodically fires off background `DELETE` queries to prune data older than an hour.
+
+Example output on a MacBook Air:
+
+```plaintext
+sturdy-sqlite % clj -X:bench
+
+============================================================
+ Benchmarking 50000 total ops across batch sizes...
+============================================================
+
+
+| :total-ops | :batch-size | :tail-quantile | :mean |   :lo |   :hi |
+|------------+-------------+----------------+-------+-------+-------|
+|      50000 |           1 |          0.025 |  1699 |  2045 |  1508 |
+|      50000 |           4 |          0.025 |  6964 | 10780 |  4986 |
+|      50000 |          16 |          0.025 | 43859 | 45245 | 42208 |
+|      50000 |          64 |          0.025 | 72823 | 74580 | 69165 |
+|      50000 |         128 |          0.025 | 82641 | 83381 | 81532 |
+|      50000 |         256 |          0.025 | 80752 | 85874 | 76314 |
+|      50000 |         500 |          0.025 | 80188 | 83361 | 78647 |
+|      50000 |        1024 |          0.025 | 23799 | 24968 | 22775 |
+|      50000 |        4096 |          0.025 | 23540 | 24185 | 23239 |
+```
+
+On this laptop, we can write **83,000** inserts per second with a batch size of 128.
 
 
 <!-- Local Variables: -->
