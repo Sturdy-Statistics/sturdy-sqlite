@@ -1,3 +1,5 @@
 {:hooks
- {:analyze-call
-  {sturdy.sqlite.test/with-test-db hooks.sturdy.sqlite.test/with-test-db}}}
+ {:macroexpand
+  {sturdy.sqlite.test/with-test-db hooks.sturdy.sqlite.macros/with-test-db}}
+ :lint-as
+ {sturdy.sqlite.ops/with-immediate-transaction clojure.core/let}}

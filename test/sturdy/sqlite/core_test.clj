@@ -4,9 +4,7 @@
    [sturdy.sqlite.core :as core]
    [sturdy.sqlite.test-support :as ts])
   (:import
-   (com.zaxxer.hikari HikariDataSource)
-   (java.io Closeable)
-   (java.sql Connection)))
+   (java.io Closeable)))
 
 (set! *warn-on-reflection* true)
 

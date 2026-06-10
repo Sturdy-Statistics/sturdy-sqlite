@@ -206,7 +206,7 @@
           (let [tx1-started (promise)
                 tx1-finish  (promise)
                 f1          (future
-                              (ops/with-immediate-transaction [tx1 conn1]
+                              (ops/with-immediate-transaction [_tx1 conn1]
                                 ;; No writes here on purpose.
                                 ;; The point is to prove BEGIN IMMEDIATE itself takes the lock.
                                 (deliver tx1-started true)
@@ -239,7 +239,7 @@
           (let [tx1-started (promise)
                 tx1-finish  (promise)
                 f1          (future
-                              (ops/with-immediate-transaction [tx1 conn1]
+                              (ops/with-immediate-transaction [_tx1 conn1]
                                 (deliver tx1-started true)
                                 @tx1-finish))]
 
