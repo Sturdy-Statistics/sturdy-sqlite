@@ -4,6 +4,7 @@
    [next.jdbc :as jdbc]
    [next.jdbc.sql :as sql]
    [sturdy.sqlite.ops :as ops]
+   [sturdy.sqlite.core :as core]
    [sturdy.sqlite.test :refer [with-test-db]]
    [sturdy.sqlite.test-support :as ts])
   (:import
@@ -277,3 +278,34 @@
         (is (nil? (fetch-val ds 60)))
         (is (= "healthy" (fetch-val ds 61)))
         (is (= 1 (row-count ds)))))))
+
+(deftest closed-system-test
+  (testing "Calling write-fn and write-async-fn after close throws descriptive exception"
+    (let [sys (core/make-in-memory-datasource "closed-system-test")]
+      ((:close-fn sys))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"SQLite batch writer is closed"
+           ((:write-fn sys) ["INSERT INTO foo VALUES (1)"])))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"SQLite batch writer is closed"
+           ((:write-async-fn sys) ["INSERT INTO foo VALUES (1)"]))))))
+
+(deftest async-error-fn-test
+  (ts/with-quiet-logging
+    (testing "Async write failures invoke optional async-error-fn callback"
+      (let [error-called (promise)
+            db-opts      {:async-error-fn (fn [e ctx]
+                                            (deliver error-called {:exception e :context ctx}))}]
+        (with-test-db [{:keys [datasource write-async-fn]} "async-err-test" db-opts]
+          (jdbc/execute! datasource ["CREATE TABLE pk_test (id INTEGER PRIMARY KEY)"])
+          (jdbc/execute! datasource ["INSERT INTO pk_test VALUES (1)"])
+          
+          ;; Duplicate PK -> triggers constraint violation asynchronously
+          (write-async-fn ["INSERT INTO pk_test VALUES (1)"])
+          
+          (let [res (deref error-called 1000 :timeout)]
+            (is (not= :timeout res) "The error callback should have been called within 1 second")
+            (is (instance? Exception (:exception res)))
+            (is (= ["INSERT INTO pk_test VALUES (1)"] (:sql-vec (:context res))))))))))
