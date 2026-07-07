@@ -19,9 +19,9 @@
      :keep-days (default: 30) - How many days of backups to retain."
   [^String db-name ^HikariDataSource datasource backup-dir & [{:keys [keep-days] :or {keep-days 30}}]]
 
-  (let [formatter    (DateTimeFormatter/ofPattern "yyyy-MM-dd_HH-mm-ss")
-        ^LocalDateTime now (LocalDateTime/now)
-        timestamp    (.format ^DateTimeFormatter formatter now)
+  (let [^DateTimeFormatter formatter (DateTimeFormatter/ofPattern "yyyy-MM-dd_HH-mm-ss")
+        ^LocalDateTime now           (LocalDateTime/now)
+        timestamp                    (.format formatter now)
         file-prefix  (str db-name "-")
         backup-file  (str (fs/path backup-dir (format "%s%s.db" file-prefix timestamp)))
 
