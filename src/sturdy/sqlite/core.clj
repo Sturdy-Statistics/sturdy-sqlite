@@ -9,7 +9,8 @@
   (:import
    (com.zaxxer.hikari HikariConfig HikariDataSource)
    (java.sql Connection)
-   (java.io Closeable)))
+   (java.io Closeable)
+   (java.lang AutoCloseable)))
 
 (set! *warn-on-reflection* true)
 
@@ -119,9 +120,9 @@
 (defn close-datasource!
   "Helper to safely close a standard physical datasource."
   [^String db-name ^HikariDataSource ds]
-  (when (instance? Closeable ds)
+  (when (instance? AutoCloseable ds)
     (try
-      (.close ^Closeable ds)
+      (.close ^AutoCloseable ds)
       (catch Exception e
         (t/log! {:level :error :id ::ds-close-error :error e
                  :data {:db-name db-name}})))))
@@ -130,13 +131,13 @@
   [^String db-name ^HikariDataSource ds ^Connection anchor]
 
   (try
-    (when (instance? Closeable anchor) (.close ^Closeable anchor))
+    (when (instance? AutoCloseable anchor) (.close ^AutoCloseable anchor))
     (catch Exception e
       (t/log! {:level :error :id ::anchor-close-error :error e
                :data {:db-name db-name}})))
 
   (try
-    (when (instance? Closeable ds) (.close ^Closeable ds))
+    (when (instance? AutoCloseable ds) (.close ^AutoCloseable ds))
     (catch Exception e
       (t/log! {:level :error :id ::ds-close-error :error e
                :data {:db-name db-name}}))))
