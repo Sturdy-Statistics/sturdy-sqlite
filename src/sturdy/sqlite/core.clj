@@ -9,7 +9,6 @@
   (:import
    (com.zaxxer.hikari HikariConfig HikariDataSource)
    (java.sql Connection)
-   (java.io Closeable)
    (java.lang AutoCloseable)))
 
 (set! *warn-on-reflection* true)
