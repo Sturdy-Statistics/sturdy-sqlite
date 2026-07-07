@@ -9,7 +9,7 @@ SQLite is remarkably fast, but its single-writer concurrency model can cause `SQ
 
 ## Features
 * **Single-Writer Queue:** Batches inserts to eliminate write-lock contention.
-* **Optimized Profiles:** Pre-configured PRAGMAs (WAL mode, memory mapping) for `:high-performance`, `:low-resource`, and `:in-memory` workloads.
+* **Optimized Profiles:** Pre-configured PRAGMAs (WAL mode, memory mapping) for `:general-purpose`, `:low-resource`, `:analytics`, `:auth`, `:write-intensive`, and `:in-memory` workloads.
 * **Deadlock Prevention:** Multi-statement transactions using `BEGIN IMMEDIATE`.
 * **Zero-Downtime Backups:** Online point-in-time snapshots using `VACUUM INTO`.
 * **Custom Types:** Seamless conversion for UUIDs (stored as BLOBs), Enums, Paths, and JSON.
@@ -46,7 +46,7 @@ This initializes the Hikari pool, sets all connection PRAGMAs, and spins up the 
               :builder-opts b-opts})
 
 ;; 3. Start the system
-(def sys (db/make-datasource "my-app" "./data" :high-performance db-opts))
+(def sys (db/make-datasource "my-app" "./data" :general-purpose db-opts))
 ```
 
 The factory returns a system map containing everything you need to interact with the database:

@@ -148,7 +148,7 @@
   "Creates a HikariDataSource for the given physical database path.
    Ensures the parent directory exists before initialization.
 
-   Available profiles: :high-performance, :low-resource
+   Available profiles: :general-purpose, :write-intensive, :analytics, :auth, :low-resource
 
    Opts:
      :batch-size    (default: 500)
@@ -197,7 +197,7 @@
 
    `db-name` can be any string (e.g., a random UUID for test isolation).
 
-  Opts:
+   Opts:
      :batch-size    (default: 500)
      :batch-wait-ms (default: 10)
      :builder-opts  (default: {}) - Global next.jdbc opts
