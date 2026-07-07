@@ -71,7 +71,7 @@
                                      :err-code  (err-code e)
                                      :sleep-ms  sleep-ms
                                      :error     (.getMessage e)}})
-                    (Thread/sleep ^long (long sleep-ms))
+                    (Thread/sleep (long sleep-ms))
                     :retry)
                   (throw e)))))]
       (if (= result :retry)
@@ -125,38 +125,85 @@
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; core.async Batching Engine
 
+(defn- pull-batch
+  [first-req req-ch max-batch-size max-wait-ms]
+  ;; start a timeout AFTER first request comes in
+  (let [timeout-ch (a/timeout max-wait-ms)]
+    (loop [acc [first-req]
+           n   1]
+      (if (= n max-batch-size)
+        acc
+        (let [[val port] (a/alts!! [req-ch timeout-ch])]
+          (if (and (= port req-ch) val)
+            (recur (conj acc val) (inc n))
+            ;; timeout or channel closed -> send batch
+            acc))))))
+
+(defn- handle-async-error!
+  [e sql-vec msg async-error-fn log?]
+  (when log?
+   (t/log! {:level :error
+            :id    ::async-write-error
+            :msg   msg
+            :error e
+            :data  {:sql (first sql-vec)}}))
+  (when async-error-fn
+    (try
+      (async-error-fn e {:sql-vec sql-vec})
+      (catch Exception cb-e
+        (t/log! {:level :error
+                 :id    ::async-error-fn-failed
+                 :msg   "User async-error-fn callback threw an exception"
+                 :error cb-e})))))
+
+(defn- handle-global-error!
+  [global-e batch async-error-fn]
+  (let [async-reqs (filter #(nil? (:resp-ch %)) batch)]
+    (when (seq async-reqs)
+      (t/log! {:level :error
+               :id    ::async-global-write-error
+               :msg   "Async SQL batch write failed due to global transaction error"
+               :error global-e
+               :data  {:failed-count (count async-reqs)
+                       :sample-sql   (mapv #(first (:sql-vec %)) (take 5 async-reqs))}})))
+  (doseq [{:keys [sql-vec resp-ch]} batch]
+    (if resp-ch
+      (a/put! resp-ch global-e)
+      (when async-error-fn
+        (handle-async-error! global-e sql-vec nil async-error-fn false)))))
+
+(defn- write-batch!
+  [tx batch global-builder-opts async-error-fn]
+  (doseq [{:keys [sql-vec opts resp-ch]} batch]
+    (try
+      (let [merged-opts (merge global-builder-opts opts)
+            res         (jdbc/execute! tx sql-vec merged-opts)]
+        (when resp-ch (a/put! resp-ch res)))
+      (catch Exception e
+        (if resp-ch
+          (a/put! resp-ch e)
+          (handle-async-error! e sql-vec "Async SQL write failed (inner error)" async-error-fn true))))))
+
 (defn start-batch-writer!
   "Starts a background thread that pulls from req-ch and executes in time/size bounded batches.
    Returns a map with the input channel (:req-ch) and the thread completion channel (:worker-ch)."
-  [ds max-batch-size max-wait-ms global-builder-opts]
-  (let [req-ch (a/chan 10000)]
-    {:req-ch req-ch
-     :worker-ch
-     (a/thread
-       (loop []
-         (when-let [first-req (a/<!! req-ch)]
-           (let [timeout-ch (a/timeout max-wait-ms)
-                 batch      (loop [acc [first-req]
-                                   n   1]
-                              (if (= n max-batch-size)
-                                acc
-                                (let [[val port] (a/alts!! [req-ch timeout-ch])]
-                                  (if (and (= port req-ch) val)
-                                    (recur (conj acc val) (inc n))
-                                    acc))))]
-             (try
-               (with-immediate-transaction [tx ds]
-                 (doseq [{:keys [sql-vec opts resp-ch]} batch]
-                   (try
-                     (let [merged-opts (merge global-builder-opts opts)
-                           res         (jdbc/execute! tx sql-vec merged-opts)]
-                       (when resp-ch (a/put! resp-ch res)))
-                     (catch Exception e
-                       (when resp-ch (a/put! resp-ch e))))))
-               (catch Exception global-e
-                 (doseq [{:keys [resp-ch]} batch]
-                   (when resp-ch (a/put! resp-ch global-e)))))
-             (recur)))))}))
+  ([ds max-batch-size max-wait-ms global-builder-opts]
+   (start-batch-writer! ds max-batch-size max-wait-ms global-builder-opts nil))
+  ([ds max-batch-size max-wait-ms global-builder-opts async-error-fn]
+   (let [req-ch (a/chan 10000)]
+     {:req-ch req-ch
+      :worker-ch
+      (a/thread
+        (loop []
+          ;; block until a request comes, so we don't spin on timeouts needlessly
+          (when-let [first-req (a/<!! req-ch)]
+            (let [batch (pull-batch first-req req-ch max-batch-size max-wait-ms)]
+              (try
+                (with-immediate-transaction [tx ds]
+                  (write-batch! tx batch global-builder-opts async-error-fn))
+                (catch Exception global-e
+                  (handle-global-error! global-e batch async-error-fn)))
+              (recur)))))})))
 
 (defn close-batch-writer!
   [{:keys [req-ch worker-ch]}]
@@ -167,14 +214,17 @@
   "Pushes a standard JDBC sql-vec to the batch writer and blocks for the result.
    Acts as a drop-in replacement for (jdbc/execute! ds [\"...\"] opts)."
   [batch-sys sql-vec & [opts]]
-  (let [resp-ch (a/promise-chan)]
-    (a/>!! (:req-ch batch-sys) {:sql-vec sql-vec :opts opts :resp-ch resp-ch})
-    (let [res (a/<!! resp-ch)]
-      (if (instance? Throwable res)
-        (throw res)
-        res))))
+  (let [resp-ch (a/promise-chan)
+        req     {:sql-vec sql-vec :opts opts :resp-ch resp-ch}]
+    (if (a/>!! (:req-ch batch-sys) req)
+      (let [res (a/<!! resp-ch)]
+        (if (instance? Throwable res)
+          (throw res)
+          res))
+      (throw (ex-info "SQLite batch writer is closed" {:sql-vec sql-vec})))))
 
 (defn execute-batched-async!
   "Fire-and-forget version. Returns immediately."
   [batch-sys sql-vec & [opts]]
-  (a/>!! (:req-ch batch-sys) {:sql-vec sql-vec :opts opts}))
+  (when-not (a/>!! (:req-ch batch-sys) {:sql-vec sql-vec :opts opts})
+    (throw (ex-info "SQLite batch writer is closed" {:sql-vec sql-vec}))))
