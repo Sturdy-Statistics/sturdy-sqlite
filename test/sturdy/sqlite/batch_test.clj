@@ -3,6 +3,7 @@
    [clojure.test :refer [deftest is testing]]
    [next.jdbc :as jdbc]
    [sturdy.sqlite.test :refer [with-test-db]]
+   [sturdy.sqlite.test-support :as ts]
    [sturdy.sqlite.types :as types]))
 
 (set! *warn-on-reflection* true)
@@ -36,8 +37,8 @@
 
         (write-async-fn ["INSERT INTO logs (msg) VALUES (?)" "hello background worker"])
 
-        (Thread/sleep 50)
-
-        (let [rows (jdbc/execute! datasource ["SELECT * FROM logs"] b-opts)]
-          (is (= 1 (count rows)))
-          (is (= "hello background worker" (-> rows first :msg))))))))
+        (is (ts/eventually
+             #(let [rows (jdbc/execute! datasource ["SELECT * FROM logs"] b-opts)]
+                (and (= 1 (count rows))
+                     (= "hello background worker" (-> rows first :msg))))
+             1000))))))
