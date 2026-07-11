@@ -142,11 +142,11 @@
 (defn- handle-async-error!
   [e sql-vec msg async-error-fn log?]
   (when log?
-   (t/log! {:level :error
-            :id    ::async-write-error
-            :msg   msg
-            :error e
-            :data  {:sql (first sql-vec)}}))
+    (t/log! {:level :error
+             :id    ::async-write-error
+             :msg   msg
+             :error e
+             :data  {:sql (first sql-vec)}}))
   (when async-error-fn
     (try
       (async-error-fn e {:sql-vec sql-vec})
@@ -174,15 +174,25 @@
 
 (defn- write-batch!
   [tx batch global-builder-opts async-error-fn]
-  (doseq [{:keys [sql-vec opts resp-ch]} batch]
-    (try
-      (let [merged-opts (merge global-builder-opts opts)
-            res         (jdbc/execute! tx sql-vec merged-opts)]
-        (when resp-ch (a/put! resp-ch res)))
-      (catch Exception e
-        (if resp-ch
-          (a/put! resp-ch e)
-          (handle-async-error! e sql-vec "Async SQL write failed (inner error)" async-error-fn true))))))
+  (reduce
+   (fn [results {:keys [sql-vec opts resp-ch]}]
+     (try
+       (let [merged-opts (merge global-builder-opts opts)
+             res         (jdbc/execute! tx sql-vec merged-opts)]
+         (cond-> results resp-ch (conj [resp-ch res])))
+       (catch Exception e
+         (if resp-ch
+           (conj results [resp-ch e])
+           (do
+             (handle-async-error! e sql-vec "Async SQL write failed (inner error)" async-error-fn true)
+             results)))))
+   []
+   batch))
+
+(defn- deliver-results!
+  [results]
+  (doseq [[resp-ch result] results]
+    (a/put! resp-ch result)))
 
 (defn start-batch-writer!
   "Starts a background thread that pulls from req-ch and executes in time/size bounded batches.
@@ -199,8 +209,11 @@
           (when-let [first-req (a/<!! req-ch)]
             (let [batch (pull-batch first-req req-ch max-batch-size max-wait-ms)]
               (try
-                (with-immediate-transaction [tx ds]
-                  (write-batch! tx batch global-builder-opts async-error-fn))
+                (let [res (with-immediate-transaction [tx ds]
+                            (write-batch! tx batch global-builder-opts async-error-fn))]
+                  ;; transaction succeeded -> deliver results
+                  (deliver-results! res))
+                ;; catch COMMIT failure
                 (catch Exception global-e
                   (handle-global-error! global-e batch async-error-fn)))
               (recur)))))})))

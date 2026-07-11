@@ -100,3 +100,51 @@
 
            (finally
              (ops/close-batch-writer! batch-sys))))))))
+
+(deftest synchronous-results-wait-for-commit-test
+  (let [transaction-body-finished (promise)
+        allow-commit              (promise)]
+    (with-redefs [ops/-transact-immediate
+                  (fn [_ds _opts f]
+                    (let [result (f ::tx)]
+                      (deliver transaction-body-finished true)
+                      @allow-commit
+                      result))
+                  jdbc/execute! (fn [_tx _sql-vec _opts] ::write-result)]
+      (let [batch-sys (ops/start-batch-writer! ::ds 1 10 {})
+            resp-ch   (a/promise-chan)]
+        (try
+          (a/>!! (:req-ch batch-sys)
+                 {:sql-vec ["INSERT INTO example DEFAULT VALUES"]
+                  :opts {} :resp-ch resp-ch})
+
+          @transaction-body-finished
+          (is (nil? (a/poll! resp-ch))
+              "A synchronous result must not be visible before COMMIT finishes")
+
+          (deliver allow-commit true)
+          (is (= ::write-result (a/<!! resp-ch)))
+          (finally
+            (deliver allow-commit true)
+            (ops/close-batch-writer! batch-sys)))))))
+
+(deftest commit-failure-reaches-all-synchronous-callers-test
+  (let [commit-error (ex-info "COMMIT failed" {})]
+    (with-redefs [ops/-transact-immediate
+                  (fn [_ds _opts f]
+                    (f ::tx)
+                    (throw commit-error))
+                  jdbc/execute! (fn [_tx sql-vec _opts] [(second sql-vec)])]
+      (let [batch-sys (ops/start-batch-writer! ::ds 2 100 {})
+            resp-1    (a/promise-chan)
+            resp-2    (a/promise-chan)]
+        (try
+          (a/>!! (:req-ch batch-sys)
+                 {:sql-vec ["INSERT" 1] :opts {} :resp-ch resp-1})
+          (a/>!! (:req-ch batch-sys)
+                 {:sql-vec ["INSERT" 2] :opts {} :resp-ch resp-2})
+
+          (is (identical? commit-error (a/<!! resp-1)))
+          (is (identical? commit-error (a/<!! resp-2)))
+          (finally
+            (ops/close-batch-writer! batch-sys)))))))
