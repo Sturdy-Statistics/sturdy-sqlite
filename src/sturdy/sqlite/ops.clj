@@ -2,7 +2,8 @@
   (:require
    [clojure.core.async :as a]
    [next.jdbc :as jdbc]
-   [taoensso.telemere :as t])
+   [taoensso.telemere :as t]
+   [taoensso.truss :refer [have]])
   (:import
    (java.sql SQLException)
    (org.sqlite SQLiteException)
@@ -51,6 +52,8 @@
   "Retries (f) up to `retries` times on ANY flavor of SQLITE_BUSY (5) or SQLITE_LOCKED (6).
    Uses randomized jitter for the delay to prevent thundering herd collisions."
   [f & {:keys [retries base-delay-ms] :or {retries 3, base-delay-ms 1000}}]
+  (have nat-int? retries)
+  (have pos-int? base-delay-ms)
   (loop [n 0]
     (let [result
           (try
@@ -124,6 +127,12 @@
 
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; core.async Batching Engine
+
+(defn validate-batch-options!
+  "Throws if the batch writer's size or wait options are invalid."
+  [max-batch-size max-wait-ms]
+  (have pos-int? max-batch-size)
+  (have nat-int? max-wait-ms))
 
 (defn- pull-batch
   [first-req req-ch max-batch-size max-wait-ms]
@@ -200,6 +209,7 @@
   ([ds max-batch-size max-wait-ms global-builder-opts]
    (start-batch-writer! ds max-batch-size max-wait-ms global-builder-opts nil))
   ([ds max-batch-size max-wait-ms global-builder-opts async-error-fn]
+   (validate-batch-options! max-batch-size max-wait-ms)
    (let [req-ch (a/chan 10000)]
      {:req-ch req-ch
       :worker-ch

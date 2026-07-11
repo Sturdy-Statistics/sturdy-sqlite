@@ -48,6 +48,21 @@
          #"Use make-in-memory-datasource instead"
          (core/make-datasource "mem-test" "target/test-db" :in-memory)))))
 
+(deftest datasource-batch-option-validation-test
+  (testing "Invalid batching options fail before creating filesystem resources"
+    (let [db-dir "target/invalid-batch-options"]
+      (fs/delete-tree db-dir)
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"max-batch-size"
+           (core/make-datasource "invalid" db-dir :general-purpose
+                                 {:batch-size 0})))
+      (is (not (fs/exists? db-dir))))
+
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo #"max-wait-ms"
+         (core/make-in-memory-datasource "invalid"
+                                         {:batch-wait-ms -1})))))
+
 (deftest unknown-profile-test
   (testing "Unknown profiles throw with available keys"
     (let [err (try

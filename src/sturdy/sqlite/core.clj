@@ -171,6 +171,7 @@
     (throw (ex-info "The DB will drop if idle. Use make-in-memory-datasource instead."
                     {})))
 
+  (ops/validate-batch-options! batch-size batch-wait-ms)
   (fs/create-dirs db-dir)
 
   (let [db-name'  (-> db-name fs/file-name fs/strip-ext)
@@ -214,6 +215,7 @@
   [db-name
    & [{:keys [batch-size batch-wait-ms builder-opts async-error-fn]
        :or {batch-size 500 batch-wait-ms 10 builder-opts {}}}]]
+  (ops/validate-batch-options! batch-size batch-wait-ms)
   (let [db-name'  (-> db-name fs/file-name fs/strip-ext)
         cfg       (build-hk-cfg db-name db-name :in-memory)
         ds        (HikariDataSource. cfg)

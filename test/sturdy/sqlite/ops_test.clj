@@ -55,6 +55,39 @@
                       :base-delay-ms 1)))
         (is (= 1 @attempts) "Must not retry on standard SQL errors")))))
 
+(deftest retry-sqlite-option-validation-test
+  (testing "Retry options reject invalid values before invoking the operation"
+    (doseq [retries [-1 1.5 nil]]
+      (let [called? (atom false)]
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"retries"
+             (ops/retry-sqlite #(reset! called? true) :retries retries))
+            (str "Invalid retries: " (pr-str retries)))
+        (is (false? @called?))))
+
+    (doseq [base-delay-ms [0 -1 1.5 nil]]
+      (let [called? (atom false)]
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"base-delay-ms"
+             (ops/retry-sqlite #(reset! called? true)
+                               :base-delay-ms base-delay-ms))
+            (str "Invalid base-delay-ms: " (pr-str base-delay-ms)))
+        (is (false? @called?))))))
+
+(deftest batch-writer-option-validation-test
+  (testing "Batching options reject invalid values before starting a worker"
+    (doseq [batch-size [0 -1 1.5 nil]]
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"max-batch-size"
+           (ops/start-batch-writer! ::ds batch-size 10 {}))
+          (str "Invalid max-batch-size: " (pr-str batch-size))))
+
+    (doseq [batch-wait-ms [-1 1.5 nil]]
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"max-wait-ms"
+           (ops/start-batch-writer! ::ds 10 batch-wait-ms {}))
+          (str "Invalid max-wait-ms: " (pr-str batch-wait-ms))))))
+
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; SQLite error code extraction
 
