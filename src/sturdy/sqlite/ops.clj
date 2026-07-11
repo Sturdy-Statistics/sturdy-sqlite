@@ -237,7 +237,8 @@
       (throw (ex-info "SQLite batch writer is closed" {:sql-vec sql-vec})))))
 
 (defn execute-batched-async!
-  "Fire-and-forget version. Returns immediately."
+  "Enqueues a write without waiting for SQL execution or commit. Blocks to apply
+   backpressure if the bounded writer queue is full."
   [batch-sys sql-vec & [opts]]
   (when-not (a/>!! (:req-ch batch-sys) {:sql-vec sql-vec :opts opts})
     (throw (ex-info "SQLite batch writer is closed" {:sql-vec sql-vec}))))

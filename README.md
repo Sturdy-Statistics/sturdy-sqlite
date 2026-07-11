@@ -89,9 +89,13 @@ It blocks the calling thread until the background queue processes the batch.
   (:last-insert-rowid() (first res)))
 ```
 
-* **:write-async-fn (Fire-and-Forget):** Use this for high-throughput, non-critical data like logging, metric counters, or rate-limiting. 
-It returns immediately and flushes in the background without blocking the calling thread. 
+* **:write-async-fn (Queued Write):** Use this for high-throughput, non-critical data like logging, metric counters, or rate-limiting.
+It returns after placing the write on the bounded background queue; it does not wait for SQL execution or transaction commit.
+If the queue's 10,000-request buffer is full, the call blocks until the writer makes room.
+This backpressure prevents an overloaded database from causing unbounded memory growth.
+
 Use this instead of `:write-fn` when you don't need to wait for the transaction to complete, and you don't care about reading generated IDs or catching database errors.
+Use `:async-error-fn` if asynchronous failures must be observed.
 ```clojure
 ((:write-async-fn sys) ["UPDATE metrics SET count = count + 1 WHERE id = ?" 1])
 ```

@@ -159,7 +159,7 @@
   Returns a map:
    {:datasource     (HikariDataSource)
     :write-fn       (fn [sql-vec & [opts]]): efficient writes. Blocking, waits for the result
-    :write-async-fn fire-and-forget variant
+    :write-async-fn queued variant; may block while the bounded queue is full
     :migrate-fn     (fn [classpath-prefix]): perform ragtime migration.  call on setup
     :backup-fn      (fn [backup-dir]): backup DB
     :close-fn       (fn): - Closes the anchor, then the pool}"
@@ -207,7 +207,7 @@
    Returns a map:
    {:datasource     (HikariDataSource)
     :write-fn       (fn [sql-vec & [opts]]): efficient writes. Blocking, waits for the result
-    :write-async-fn fire-and-forget variant
+    :write-async-fn queued variant; may block while the bounded queue is full
     :migrate-fn     (fn [classpath-prefix]): perform ragtime migration.  call on setup
     :backup-fn      (fn [backup-dir]): backup DB
     :close-fn       (fn): - Closes the anchor, then the pool}"
