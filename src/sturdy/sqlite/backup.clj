@@ -15,6 +15,10 @@
   "Updates SQLite query planner statistics, creates a point-in-time snapshot of the DB,
    and prunes old backups.
 
+   Intended to run once per day. Backup filenames have one-second timestamp
+   precision; a second backup of the same database within one second fails
+   because VACUUM INTO will not overwrite an existing file.
+
    Opts:
      :keep-days (default: 30) - How many days of backups to retain."
   [^String db-name ^HikariDataSource datasource backup-dir & [{:keys [keep-days] :or {keep-days 30}}]]

@@ -130,6 +130,8 @@ Put your `.sql` migrations in `resources/migrations` and run them at startup:
 **Backups:**
 The built-in backup function streams the database using `VACUUM INTO` without blocking writers. 
 It also automatically prunes backups older than 30 days.
+Backups are intended to run once per day.
+Filenames have one-second timestamp precision, so a second backup of the same database within one second targets an existing file and fails.
 ```clojure
 ;; Creates a snapshot in the provided directory (e.g., ./backups/my-app-2026-04-20_12-00-00.db)
 ((:backup-fn sys) "./backups" {:keep-days 14})
