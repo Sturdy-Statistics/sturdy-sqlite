@@ -17,18 +17,18 @@
 
 (deftest retry-sqlite-test
   (ts/with-quiet-logging
-   (testing "Retries exactly up to the limit on SQLITE_BUSY (5)"
-     (let [attempts (atom 0)]
-       (is (thrown? SQLException
-                    (ops/retry-sqlite
-                     (fn []
-                       (swap! attempts inc)
-                       (throw (SQLException. "Busy!" "HY000" 5)))
-                     :retries 3
-                     ;; Set base delay to 1ms so tests run instantly
-                     :base-delay-ms 1)))
-       (is (= 4 @attempts)
-           "Initial try + 3 retries = 4 total attempts")))
+    (testing "Retries exactly up to the limit on SQLITE_BUSY (5)"
+      (let [attempts (atom 0)]
+        (is (thrown? SQLException
+                     (ops/retry-sqlite
+                      (fn []
+                        (swap! attempts inc)
+                        (throw (SQLException. "Busy!" "HY000" 5)))
+                      :retries 3
+                      ;; Set base delay to 1ms so tests run instantly
+                      :base-delay-ms 1)))
+        (is (= 4 @attempts)
+            "Initial try + 3 retries = 4 total attempts")))
 
     (testing "Succeeds if it recovers before the limit is reached"
       (let [attempts (atom 0)
@@ -334,10 +334,10 @@
         (with-test-db [{:keys [datasource write-async-fn]} "async-err-test" db-opts]
           (jdbc/execute! datasource ["CREATE TABLE pk_test (id INTEGER PRIMARY KEY)"])
           (jdbc/execute! datasource ["INSERT INTO pk_test VALUES (1)"])
-          
+
           ;; Duplicate PK -> triggers constraint violation asynchronously
           (write-async-fn ["INSERT INTO pk_test VALUES (1)"])
-          
+
           (let [res (deref error-called 1000 :timeout)]
             (is (not= :timeout res) "The error callback should have been called within 1 second")
             (is (instance? Exception (:exception res)))
