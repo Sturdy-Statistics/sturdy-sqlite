@@ -10,6 +10,19 @@
 
 (set! *warn-on-reflection* true)
 
+(deftest backup-retention-option-validation-test
+  (testing "Invalid keep-days values fail before database or filesystem side effects"
+    (doseq [keep-days [0 -1 1.5 nil]]
+      (let [side-effects (atom [])]
+        (with-redefs [jdbc/execute!  (fn [& _] (swap! side-effects conj :execute))
+                      fs/create-dirs (fn [& _] (swap! side-effects conj :create-dirs))]
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo #"keep-days"
+               (backup/backup-db! "testdb" {} "/mock/backups"
+                                  {:keep-days keep-days}))
+              (str "Invalid keep-days: " (pr-str keep-days)))
+          (is (empty? @side-effects)))))))
+
 (deftest backup-db-retention-test
   (ts/with-quiet-logging
    (testing "Successfully creates a backup and deletes ONLY backups older than keep-days"

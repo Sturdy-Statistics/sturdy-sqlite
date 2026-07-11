@@ -3,7 +3,8 @@
    [clojure.string :as string]
    [babashka.fs :as fs]
    [next.jdbc :as jdbc]
-   [taoensso.telemere :as t])
+   [taoensso.telemere :as t]
+   [taoensso.truss :refer [have]])
   (:import
    (java.time LocalDateTime)
    (java.time.format DateTimeFormatter)
@@ -20,9 +21,10 @@
    because VACUUM INTO will not overwrite an existing file.
 
    Opts:
-     :keep-days (default: 30) - How many days of backups to retain."
+     :keep-days (default: 30) - Positive number of days of backups to retain."
   [^String db-name ^HikariDataSource datasource backup-dir & [{:keys [keep-days] :or {keep-days 30}}]]
 
+  (have pos-int? keep-days)
   (let [^DateTimeFormatter formatter (DateTimeFormatter/ofPattern "yyyy-MM-dd_HH-mm-ss")
         ^LocalDateTime now           (LocalDateTime/now)
         timestamp                    (.format formatter now)
