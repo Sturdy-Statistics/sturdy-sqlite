@@ -47,59 +47,59 @@
 
 (deftest batch-partial-failure-test
   (ts/with-quiet-logging
-   (testing "A constraint violation on one write does not prevent other writes in the same batch from committing"
-     (with-test-db [{:keys [datasource]} "batch-partial-test"]
-       (jdbc/execute! datasource ["CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT UNIQUE)"])
-       (jdbc/execute! datasource ["INSERT INTO items (id, name) VALUES (1, 'taken')"])
+    (testing "A constraint violation on one write does not prevent other writes in the same batch from committing"
+      (with-test-db [{:keys [datasource]} "batch-partial-test"]
+        (jdbc/execute! datasource ["CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT UNIQUE)"])
+        (jdbc/execute! datasource ["INSERT INTO items (id, name) VALUES (1, 'taken')"])
 
-       ;; Start a dedicated batch writer with a long wait so all 4 items
-       ;; are guaranteed to be pulled into a single batch.
-       (let [batch-sys (ops/start-batch-writer! datasource 100 500 {} nil)
-             ch-ok-1   (a/promise-chan)
-             ch-ok-2   (a/promise-chan)
-             ch-fail   (a/promise-chan)
-             ch-ok-3   (a/promise-chan)]
-         (try
-           ;; Push all items directly onto the channel before the batch fires.
-           (a/>!! (:req-ch batch-sys)
-                  {:sql-vec ["INSERT INTO items (id, name) VALUES (2, 'alpha')"]
-                   :opts {} :resp-ch ch-ok-1})
-           (a/>!! (:req-ch batch-sys)
-                  {:sql-vec ["INSERT INTO items (id, name) VALUES (3, 'beta')"]
-                   :opts {} :resp-ch ch-ok-2})
-           (a/>!! (:req-ch batch-sys)
-                  {:sql-vec ["INSERT INTO items (id, name) VALUES (4, 'taken')"]  ;; unique conflict!
-                   :opts {} :resp-ch ch-fail})
-           (a/>!! (:req-ch batch-sys)
-                  {:sql-vec ["INSERT INTO items (id, name) VALUES (5, 'gamma')"]
-                   :opts {} :resp-ch ch-ok-3})
+        ;; Start a dedicated batch writer with a long wait so all 4 items
+        ;; are guaranteed to be pulled into a single batch.
+        (let [batch-sys (ops/start-batch-writer! datasource 100 500 {} nil)
+              ch-ok-1   (a/promise-chan)
+              ch-ok-2   (a/promise-chan)
+              ch-fail   (a/promise-chan)
+              ch-ok-3   (a/promise-chan)]
+          (try
+            ;; Push all items directly onto the channel before the batch fires.
+            (a/>!! (:req-ch batch-sys)
+                   {:sql-vec ["INSERT INTO items (id, name) VALUES (2, 'alpha')"]
+                    :opts {} :resp-ch ch-ok-1})
+            (a/>!! (:req-ch batch-sys)
+                   {:sql-vec ["INSERT INTO items (id, name) VALUES (3, 'beta')"]
+                    :opts {} :resp-ch ch-ok-2})
+            (a/>!! (:req-ch batch-sys)
+                   {:sql-vec ["INSERT INTO items (id, name) VALUES (4, 'taken')"]  ;; unique conflict!
+                    :opts {} :resp-ch ch-fail})
+            (a/>!! (:req-ch batch-sys)
+                   {:sql-vec ["INSERT INTO items (id, name) VALUES (5, 'gamma')"]
+                    :opts {} :resp-ch ch-ok-3})
 
-           (let [r1 (a/<!! ch-ok-1)
-                 r2 (a/<!! ch-ok-2)
-                 r3 (a/<!! ch-fail)
-                 r4 (a/<!! ch-ok-3)]
+            (let [r1 (a/<!! ch-ok-1)
+                  r2 (a/<!! ch-ok-2)
+                  r3 (a/<!! ch-fail)
+                  r4 (a/<!! ch-ok-3)]
 
-             ;; The conflicting write should have received an exception
-             (is (instance? Exception r3)
-                 "The conflicting write should return an exception")
+              ;; The conflicting write should have received an exception
+              (is (instance? Exception r3)
+                  "The conflicting write should return an exception")
 
-             ;; Writes before and after the failure should succeed
-             (is (not (instance? Throwable r1))
-                 "Write before the failure should succeed")
-             (is (not (instance? Throwable r2))
-                 "Write before the failure should succeed")
-             (is (not (instance? Throwable r4))
-                 "Write AFTER the failure should also succeed")
+              ;; Writes before and after the failure should succeed
+              (is (not (instance? Throwable r1))
+                  "Write before the failure should succeed")
+              (is (not (instance? Throwable r2))
+                  "Write before the failure should succeed")
+              (is (not (instance? Throwable r4))
+                  "Write AFTER the failure should also succeed")
 
-             ;; Verify the committed database state
-             (let [names (->> (jdbc/execute! datasource
-                                             ["SELECT name FROM items ORDER BY id"])
-                              (mapv :items/name))]
-               (is (= ["taken" "alpha" "beta" "gamma"] names)
-                   "Seed row + 3 successful inserts; the conflicting row is excluded")))
+              ;; Verify the committed database state
+              (let [names (->> (jdbc/execute! datasource
+                                              ["SELECT name FROM items ORDER BY id"])
+                               (mapv :items/name))]
+                (is (= ["taken" "alpha" "beta" "gamma"] names)
+                    "Seed row + 3 successful inserts; the conflicting row is excluded")))
 
-           (finally
-             (ops/close-batch-writer! batch-sys))))))))
+            (finally
+              (ops/close-batch-writer! batch-sys))))))))
 
 (deftest synchronous-results-wait-for-commit-test
   (let [transaction-body-finished (promise)
