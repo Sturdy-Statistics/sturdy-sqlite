@@ -7,6 +7,7 @@
    [next.jdbc.result-set :as rs]
    [babashka.fs :as fs])
   (:import
+   (com.zaxxer.hikari HikariDataSource)
    (java.io Closeable)))
 
 (set! *warn-on-reflection* true)
@@ -99,3 +100,13 @@
       (catch Throwable t
         ((:close-fn sys1))
         (throw t)))))
+
+(deftest in-memory-db-name-normalization-test
+  (testing "Path components and extensions are removed from the in-memory database name"
+    (let [sys (core/make-in-memory-datasource "nested/example.db")]
+      (try
+        (let [^HikariDataSource ds (:datasource sys)]
+          (is (= "SQLite-example-Pool" (.getPoolName ds)))
+          (is (re-find #"/example\?mode=memory" (.getJdbcUrl ds))))
+        (finally
+          ((:close-fn sys)))))))

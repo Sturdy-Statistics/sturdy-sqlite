@@ -217,7 +217,7 @@
        :or {batch-size 500 batch-wait-ms 10 builder-opts {}}}]]
   (ops/validate-batch-options! batch-size batch-wait-ms)
   (let [db-name'  (-> db-name fs/file-name fs/strip-ext)
-        cfg       (build-hk-cfg db-name db-name :in-memory)
+        cfg       (build-hk-cfg db-name' db-name' :in-memory)
         ds        (HikariDataSource. cfg)
         anchor    (.getConnection ds)
         batch-sys (ops/start-batch-writer! ds batch-size batch-wait-ms builder-opts async-error-fn)]
