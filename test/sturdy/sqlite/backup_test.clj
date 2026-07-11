@@ -25,38 +25,38 @@
 
 (deftest backup-db-retention-test
   (ts/with-quiet-logging
-   (testing "Successfully creates a backup and deletes ONLY backups older than keep-days"
-     (let [mock-backup-dir "/mock/backups"
-           db-name         "testdb"
-           now-ms          (System/currentTimeMillis)
-           day-ms          (* 24 60 60 1000)
+    (testing "Successfully creates a backup and deletes ONLY backups older than keep-days"
+      (let [mock-backup-dir "/mock/backups"
+            db-name         "testdb"
+            now-ms          (System/currentTimeMillis)
+            day-ms          (* 24 60 60 1000)
 
-           ;; The prefix must match the db-name to get picked up by the new prefix filter!
-           old-file        (fs/file "/mock/backups/testdb-old.db")
-           new-file        (fs/file "/mock/backups/testdb-new.db")
+            ;; The prefix must match the db-name to get picked up by the new prefix filter!
+            old-file        (fs/file "/mock/backups/testdb-old.db")
+            new-file        (fs/file "/mock/backups/testdb-new.db")
 
-           deleted-files   (atom [])]
+            deleted-files   (atom [])]
 
-       (with-redefs [ ;; Mock the database execution so we don't need a real DB
-                     jdbc/execute!         (constantly nil)
+        (with-redefs [ ;; Mock the database execution so we don't need a real DB
+                      jdbc/execute!         (constantly nil)
 
-                     ;; Mock the directory listing
-                     fs/create-dirs        (constantly nil)
-                     fs/list-dir           (constantly [old-file new-file])
-                     fs/regular-file?      (constantly true)
+                      ;; Mock the directory listing
+                      fs/create-dirs        (constantly nil)
+                      fs/list-dir           (constantly [old-file new-file])
+                      fs/regular-file?      (constantly true)
 
-                     ;; Mock the file timestamps: 31 days old vs 2 days old
-                     fs/last-modified-time (fn [f]
-                                             (if (= f old-file)
-                                               (fs/millis->file-time (- now-ms (* 31 day-ms)))
-                                               (fs/millis->file-time (- now-ms (* 2 day-ms)))))
-                     fs/file-time->millis  #(-> ^FileTime % .toMillis)
+                      ;; Mock the file timestamps: 31 days old vs 2 days old
+                      fs/last-modified-time (fn [f]
+                                              (if (= f old-file)
+                                                (fs/millis->file-time (- now-ms (* 31 day-ms)))
+                                                (fs/millis->file-time (- now-ms (* 2 day-ms)))))
+                      fs/file-time->millis  #(-> ^FileTime % .toMillis)
 
-                     ;; Spy on the deletions
-                     fs/delete-if-exists   (fn [f] (swap! deleted-files conj f))]
+                      ;; Spy on the deletions
+                      fs/delete-if-exists   (fn [f] (swap! deleted-files conj f))]
 
-         ;; Call the library function directly
-         (backup/backup-db! db-name {} mock-backup-dir {:keep-days 30})
+          ;; Call the library function directly
+          (backup/backup-db! db-name {} mock-backup-dir {:keep-days 30})
 
-         (is (= 1 (count @deleted-files)) "Should only delete exactly one file")
-         (is (= old-file (first @deleted-files)) "MUST delete the 31-day-old file, and spare the 2-day-old file"))))))
+          (is (= 1 (count @deleted-files)) "Should only delete exactly one file")
+          (is (= old-file (first @deleted-files)) "MUST delete the 31-day-old file, and spare the 2-day-old file"))))))
