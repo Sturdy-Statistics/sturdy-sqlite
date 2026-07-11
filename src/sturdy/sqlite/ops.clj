@@ -181,7 +181,7 @@
       (when async-error-fn
         (handle-async-error! global-e sql-vec nil async-error-fn false)))))
 
-(defn- write-batch!
+(defn- write-batch-helper!
   [tx batch global-builder-opts async-error-fn]
   (reduce
    (fn [results {:keys [sql-vec opts resp-ch]}]
@@ -203,6 +203,45 @@
   (doseq [[resp-ch result] results]
     (a/put! resp-ch result)))
 
+(defn- write-batch!
+  [ds batch global-builder-opts async-error-fn]
+  (try
+    (let [res (with-immediate-transaction [tx ds]
+                (write-batch-helper! tx batch global-builder-opts async-error-fn))]
+      ;; transaction succeeded -> deliver results
+      (deliver-results! res))
+    ;; catch transaction and COMMIT failures
+    (catch Exception global-e
+      (handle-global-error! global-e batch async-error-fn))))
+
+(defn- drain-channel!
+  [ch]
+  (loop [requests []]
+    (if-let [request (a/<!! ch)]
+      (recur (conj requests request))
+      requests)))
+
+(defn- handle-worker-failure!
+  [active-batch req-ch async-error-fn fatal]
+  ;; first reject new requests
+  (a/close! req-ch)
+
+  (t/log! {:level :error
+           :id    ::batch-writer-failed
+           :msg   "SQLite batch writer terminated unexpectedly"
+           :error fatal})
+
+  ;; fail active batch
+  (when (seq @active-batch)
+    (handle-global-error! fatal @active-batch async-error-fn))
+
+  ;; fail popped but un-processed items
+  (let [pending (drain-channel! req-ch)]
+    (when (seq pending)
+      (handle-global-error! fatal pending async-error-fn)))
+
+  fatal)
+
 (defn start-batch-writer!
   "Starts a background thread that pulls from req-ch and executes in time/size bounded batches.
    Returns a map with the input channel (:req-ch) and the thread completion channel (:worker-ch)."
@@ -210,23 +249,23 @@
    (start-batch-writer! ds max-batch-size max-wait-ms global-builder-opts nil))
   ([ds max-batch-size max-wait-ms global-builder-opts async-error-fn]
    (validate-batch-options! max-batch-size max-wait-ms)
-   (let [req-ch (a/chan 10000)]
+   (let [req-ch       (a/chan 10000)
+         active-batch (atom [])]
      {:req-ch req-ch
       :worker-ch
       (a/thread
-        (loop []
-          ;; block until a request comes, so we don't spin on timeouts needlessly
-          (when-let [first-req (a/<!! req-ch)]
-            (let [batch (pull-batch first-req req-ch max-batch-size max-wait-ms)]
-              (try
-                (let [res (with-immediate-transaction [tx ds]
-                            (write-batch! tx batch global-builder-opts async-error-fn))]
-                  ;; transaction succeeded -> deliver results
-                  (deliver-results! res))
-                ;; catch COMMIT failure
-                (catch Exception global-e
-                  (handle-global-error! global-e batch async-error-fn)))
-              (recur)))))})))
+        (try
+          (loop []
+            ;; block until a request comes, so we don't spin on timeouts needlessly
+            (when-let [first-req (a/<!! req-ch)]
+              (reset! active-batch [first-req])
+              (let [batch (pull-batch first-req req-ch max-batch-size max-wait-ms)]
+                (reset! active-batch batch)
+                (write-batch! ds batch global-builder-opts async-error-fn)
+                (reset! active-batch [])
+                (recur))))
+          (catch Throwable fatal
+            (handle-worker-failure! active-batch req-ch async-error-fn fatal))))})))
 
 (defn close-batch-writer!
   [{:keys [req-ch worker-ch]}]

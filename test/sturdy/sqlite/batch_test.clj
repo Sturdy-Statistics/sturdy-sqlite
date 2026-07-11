@@ -148,3 +148,38 @@
           (is (identical? commit-error (a/<!! resp-2)))
           (finally
             (ops/close-batch-writer! batch-sys)))))))
+
+(deftest unexpected-worker-failure-closes-writer-test
+  (testing "An unexpected worker failure reaches accepted and future callers"
+    (let [fatal     (AssertionError. "Unexpected worker failure")
+          pull-var  (ns-resolve 'sturdy.sqlite.ops 'pull-batch)
+          batch-sys (ops/start-batch-writer! ::ds 10 10 {})
+          resp-1    (a/promise-chan)
+          resp-2    (a/promise-chan)
+          pull-started (promise)
+          fail-pull    (promise)]
+      (try
+        (with-redefs-fn
+          {pull-var (fn [& _]
+                      (deliver pull-started true)
+                      @fail-pull
+                      (throw fatal))}
+          #(do
+             (a/>!! (:req-ch batch-sys)
+                    {:sql-vec ["INSERT 1"] :opts {} :resp-ch resp-1})
+             @pull-started
+             (a/>!! (:req-ch batch-sys)
+                    {:sql-vec ["INSERT 2"] :opts {} :resp-ch resp-2})
+             (deliver fail-pull true)
+             (a/<!! (:worker-ch batch-sys))))
+
+        (is (identical? fatal (a/poll! resp-1))
+            "The request removed from the queue must receive the terminal error")
+        (is (identical? fatal (a/poll! resp-2))
+            "Requests buffered before termination must receive the terminal error")
+        (is (false? (a/>!! (:req-ch batch-sys)
+                           {:sql-vec ["INSERT"] :opts {}}))
+            "The request channel must close when its worker terminates")
+        (finally
+          (deliver fail-pull true)
+          (ops/close-batch-writer! batch-sys))))))
