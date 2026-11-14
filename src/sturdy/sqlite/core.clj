@@ -1,6 +1,5 @@
 (ns sturdy.sqlite.core
   (:require
-   [clojure.string :as string]
    [babashka.fs :as fs]
    [sturdy.sqlite.migrate :as migrate]
    [sturdy.sqlite.backup :as backup]
@@ -21,71 +20,71 @@
    ;; Workload: Long-running, complex SELECT queries (aggregations, joins).
    {:pool {:maximumPoolSize 10
            :minimumIdle     10}
-    :pragmas ["PRAGMA foreign_keys=ON;"
-              "PRAGMA journal_mode=WAL;"
-              "PRAGMA synchronous=NORMAL;"
-              "PRAGMA busy_timeout=5000;"
-              "PRAGMA temp_store=MEMORY;"
-              "PRAGMA mmap_size=268435456;" ;; 256 MB
-              "PRAGMA cache_size=-64000;"]} ;;  64 MB cache
+    :pragmas {"foreign_keys" "ON"
+              "journal_mode" "WAL"
+              "synchronous" "NORMAL"
+              "busy_timeout" "5000"
+              "temp_store" "MEMORY"
+              "mmap_size" "268435456" ;; 256 MB
+              "cache_size" "-64000"}} ;;  64 MB cache
 
    :auth
    ;; Workload: fast, highly concurrent point-reads (SELECT * WHERE id = ?).
    {:pool {:maximumPoolSize 5
            :minimumIdle     5}
-    :pragmas ["PRAGMA foreign_keys=ON;"
-              "PRAGMA journal_mode=WAL;"
-              "PRAGMA synchronous=NORMAL;"
-              "PRAGMA busy_timeout=5000;"
-              "PRAGMA temp_store=MEMORY;"
-              "PRAGMA mmap_size=134217728;"  ;; 128 MB
-              "PRAGMA cache_size=-16000;"]}  ;;  16 MB cache
+    :pragmas {"foreign_keys" "ON"
+              "journal_mode" "WAL"
+              "synchronous" "NORMAL"
+              "busy_timeout" "5000"
+              "temp_store" "MEMORY"
+              "mmap_size" "134217728"  ;; 128 MB
+              "cache_size" "-16000"}}  ;;  16 MB cache
 
    :write-intensive
    ;; Workload: Background queues, metrics ingestion, append-heavy tables.
    {:pool {:maximumPoolSize 2
            :minimumIdle     2}
-    :pragmas ["PRAGMA foreign_keys=ON;"
-              "PRAGMA journal_mode=WAL;"
-              "PRAGMA synchronous=NORMAL;"
-              "PRAGMA busy_timeout=5000;"
-              "PRAGMA temp_store=FILE;"
-              "PRAGMA mmap_size=0;"
-              "PRAGMA cache_size=-4000;"]}  ;; 4 MB cache
+    :pragmas {"foreign_keys" "ON"
+              "journal_mode" "WAL"
+              "synchronous" "NORMAL"
+              "busy_timeout" "5000"
+              "temp_store" "FILE"
+              "mmap_size" "0"
+              "cache_size" "-4000"}}  ;; 4 MB cache
 
    :general-purpose
    ;; Workload: Standard CRUD web apps, queue servers, and mixed read/write loads.
    {:pool {:maximumPoolSize 5
            :minimumIdle     5}
-    :pragmas ["PRAGMA foreign_keys=ON;"
-              "PRAGMA journal_mode=WAL;"
-              "PRAGMA synchronous=NORMAL;"
-              "PRAGMA busy_timeout=5000;"
-              "PRAGMA temp_store=MEMORY;"
-              "PRAGMA mmap_size=268435456;"  ;; 256 MB
-              "PRAGMA cache_size=-32000;"]}  ;;  32 MB cache
+    :pragmas {"foreign_keys" "ON"
+              "journal_mode" "WAL"
+              "synchronous" "NORMAL"
+              "busy_timeout" "5000"
+              "temp_store" "MEMORY"
+              "mmap_size" "268435456"  ;; 256 MB
+              "cache_size" "-32000"}}  ;;  32 MB cache
 
    :low-resource
    {:pool {:maximumPoolSize 2
            :minimumIdle     2}
-    :pragmas ["PRAGMA foreign_keys=ON;"
-              "PRAGMA journal_mode=WAL;"
-              "PRAGMA synchronous=NORMAL;"
-              "PRAGMA busy_timeout=5000;"
-              "PRAGMA temp_store=FILE;" ;; Spill to disk to save RAM
-              "PRAGMA mmap_size=0;"     ;; Disable memory mapping
-              "PRAGMA cache_size=-4000;"]} ;; 4MB cache
+    :pragmas {"foreign_keys" "ON"
+              "journal_mode" "WAL"
+              "synchronous" "NORMAL"
+              "busy_timeout" "5000"
+              "temp_store" "FILE" ;; Spill to disk to save RAM
+              "mmap_size" "0"     ;; Disable memory mapping
+              "cache_size" "-4000"}} ;; 4MB cache
 
    :in-memory
    ;; Workload: Ephemeral test suites.
    {:jdbc-url "jdbc:sqlite:file:%s?mode=memory&cache=shared"
     :pool {:maximumPoolSize 2
            :minimumIdle     2}
-    :pragmas  ["PRAGMA foreign_keys=ON;"
-               "PRAGMA journal_mode=MEMORY;"
-               "PRAGMA synchronous=OFF;"
-               "PRAGMA busy_timeout=5000;"
-               "PRAGMA temp_store=MEMORY;"]}})
+    :pragmas  {"foreign_keys" "ON"
+               "journal_mode" "MEMORY"
+               "synchronous" "OFF"
+               "busy_timeout" "5000"
+               "temp_store" "MEMORY"}}})
 
 ;;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Internal Factory
@@ -100,7 +99,6 @@
 
         url-tmpl (get profile :jdbc-url "jdbc:sqlite:%s")
         jdbc-url (format url-tmpl (str (fs/absolutize db-path)))
-        init-sql (string/join " " (:pragmas profile))
         pool     (:pool profile)
 
         hk-cfg   (HikariConfig.)]
@@ -108,7 +106,11 @@
     (.setJdbcUrl           hk-cfg jdbc-url)
     (.setMaximumPoolSize   hk-cfg (:maximumPoolSize pool))
     (.setMinimumIdle       hk-cfg (:minimumIdle pool))
-    (.setConnectionInitSql hk-cfg init-sql)
+    ;; Xerial applies each recognized property to every physical connection.
+    ;; A semicolon-separated Hikari connectionInitSql executes only its first
+    ;; statement with this driver, silently dropping the remaining settings.
+    (doseq [[pragma value] (:pragmas profile)]
+      (.addDataSourceProperty hk-cfg pragma value))
     (.setPoolName          hk-cfg (str "SQLite-" db-name "-Pool"))
 
     hk-cfg))
