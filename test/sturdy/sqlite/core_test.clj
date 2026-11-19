@@ -110,3 +110,70 @@
           (is (re-find #"/example\?mode=memory" (.getJdbcUrl ds))))
         (finally
           ((:close-fn sys)))))))
+
+(defn- pragma [connection setting]
+  (-> (jdbc/execute-one! connection [(str "PRAGMA " setting)] {:builder-fn rs/as-unqualified-lower-maps})
+      vals first))
+
+(deftest every-physical-connection-receives-the-profile
+  (doseq [[profile size cache mmap temp] [[:analytics 10 -64000 268435456 2]
+                                           [:auth 5 -16000 134217728 2]
+                                           [:write-intensive 2 -4000 0 1]
+                                           [:general-purpose 5 -32000 268435456 2]
+                                           [:low-resource 2 -4000 0 1]]]
+    (testing (name profile)
+      (let [dir (fs/create-temp-dir {:prefix "sqlite-profile-"})
+            db (core/make-datasource "settings" (str dir) profile)
+            connections (atom [])]
+        (try
+          ;; Hold all checkouts simultaneously to require distinct physical connections.
+          (dotimes [_ size] (swap! connections conj (.getConnection ^HikariDataSource (:datasource db))))
+          (doseq [connection @connections]
+            (is (= "wal" (pragma connection "journal_mode")))
+            (is (= 1 (pragma connection "foreign_keys")))
+            (is (= 1 (pragma connection "synchronous")))
+            (is (= 5000 (pragma connection "busy_timeout")))
+            (is (= temp (pragma connection "temp_store")))
+            (is (= mmap (pragma connection "mmap_size")))
+            (is (= cache (pragma connection "cache_size"))))
+          (finally
+            (doseq [^java.sql.Connection connection @connections] (.close connection))
+            ((:close-fn db))
+            (fs/delete-tree dir)))))))
+
+(deftest wal-allows-a-writer-during-a-reader-snapshot
+  (let [dir (fs/create-temp-dir {:prefix "sqlite-wal-"})
+        db (core/make-datasource "concurrency" (str dir) :general-purpose)]
+    (try
+      (jdbc/execute! (:datasource db) ["CREATE TABLE facts (value INTEGER)"])
+      (jdbc/execute! (:datasource db) ["INSERT INTO facts VALUES (1)"])
+      (with-open [^java.sql.Connection reader (.getConnection ^HikariDataSource (:datasource db))
+                  ^java.sql.Connection writer (.getConnection ^HikariDataSource (:datasource db))]
+        (.setAutoCommit reader false)
+        (is (= 1 (-> (jdbc/execute-one! reader ["SELECT COUNT(*) AS n FROM facts"]) vals first)))
+        (jdbc/execute! writer ["INSERT INTO facts VALUES (2)"])
+        (is (= 1 (-> (jdbc/execute-one! reader ["SELECT COUNT(*) AS n FROM facts"]) vals first)))
+        (.rollback reader)
+        (is (= 2 (-> (jdbc/execute-one! writer ["SELECT COUNT(*) AS n FROM facts"]) vals first))))
+      (finally ((:close-fn db)) (fs/delete-tree dir)))))
+
+(deftest in-memory-profile-retains-shared-data-and-configures-both-connections
+  (let [db (core/make-in-memory-datasource (str (random-uuid)))
+        ^HikariDataSource ds (:datasource db)]
+    (try
+      ;; The public pool has two connections, one held internally as an anchor.
+      (with-open [^java.sql.Connection c (.getConnection ds)]
+        (is (= "memory" (pragma c "journal_mode")))
+        (is (= 1 (pragma c "foreign_keys")))
+        (is (= 0 (pragma c "synchronous")))
+        (is (= 5000 (pragma c "busy_timeout")))
+        (is (= 2 (pragma c "temp_store")))
+        (jdbc/execute! c ["CREATE TABLE retained (value INTEGER)"])
+        (jdbc/execute! c ["INSERT INTO retained VALUES (42)"]))
+      (.softEvictConnections (.getHikariPoolMXBean ds))
+      (with-open [^java.sql.Connection c (.getConnection ds)]
+        (is (= 42 (-> (jdbc/execute-one! c ["SELECT value FROM retained"]) vals first)))
+        (is (= 1 (pragma c "foreign_keys")))
+        (is (= 0 (pragma c "synchronous")))
+        (is (= 5000 (pragma c "busy_timeout"))))
+      (finally ((:close-fn db))))))
